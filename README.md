@@ -156,7 +156,9 @@ For each proposed pair, the model receives a bounded, label-free JSON summary
 containing author-name forms, paper identifiers, coauthors, titles, and venues.
 It must return a JSON decision with `same_author`, `confidence`, and a short
 reason. A merge requires both compatible names and confidence at or above the
-configured threshold.
+configured threshold. If the model still returns malformed output after all
+retries, HHC-GM records the responses in its audit cache, conservatively leaves
+the clusters separate, and continues processing.
 
 | Option | Default | Purpose |
 |---|---|---|
