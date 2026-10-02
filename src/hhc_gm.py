@@ -27,6 +27,10 @@ except ImportError:  # Supports ``python src/hhc_gm.py``.
 
 DEFAULT_MODEL = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
 PROMPT_VERSION = "hhc-gm-v1"
+RETRY_INSTRUCTION = (
+    "\n\nYour previous response was invalid. Return only the requested JSON object "
+    "with a boolean same_author and numeric confidence."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,6 +217,8 @@ class LocalTransformersJudge:
         self.max_new_tokens = max_new_tokens
         self.retries = retries
         self.torch = torch
+        self.prompt_reductions = 0
+        self.prompt_cache: dict[tuple[tuple[int, ...], tuple[int, ...]], str] = {}
         self.cache: dict[str, dict[str, Any]] = {}
         if cache_path is not None and cache_path.exists():
             try:
@@ -261,7 +267,29 @@ class LocalTransformersJudge:
         right: hhc.Cluster,
         rows: list[dict[str, str]],
     ) -> str:
-        return build_prompt(left, right, rows, self.max_records)
+        identity = (
+            tuple(sorted(record.index for record in left.records)),
+            tuple(sorted(record.index for record in right.records)),
+        )
+        cached = self.prompt_cache.get(identity)
+        if cached is not None:
+            return cached
+
+        for max_records in range(self.max_records, 0, -1):
+            prompt = build_prompt(left, right, rows, max_records)
+            longest_prompt = prompt + RETRY_INSTRUCTION if self.retries else prompt
+            rendered = self._render(longest_prompt)
+            input_length = len(self.tokenizer(rendered)["input_ids"])
+            if input_length <= self.max_input_tokens:
+                if max_records < self.max_records:
+                    self.prompt_reductions += 1
+                self.prompt_cache[identity] = prompt
+                return prompt
+
+        raise RuntimeError(
+            "LLM prompt exceeds --max-input-tokens even with one record per "
+            "cluster; increase --max-input-tokens"
+        )
 
     def cache_key(
         self,
@@ -326,10 +354,7 @@ class LocalTransformersJudge:
         for attempt in range(self.retries + 1):
             retry_prompt = prompt
             if attempt:
-                retry_prompt += (
-                    "\n\nYour previous response was invalid. Return only the requested "
-                    "JSON object with a boolean same_author and numeric confidence."
-                )
+                retry_prompt += RETRY_INSTRUCTION
             response = self._generate(retry_prompt)
             try:
                 decision = parse_decision(response)
@@ -431,6 +456,7 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
     started_at = time.perf_counter()
     rows = hhc.read_rows(args.input, args.limit)
     device = resolve_device(args.device)
+    model_setup_started_at = time.perf_counter()
     judge = LocalTransformersJudge(
         model_name=args.model,
         model_cache=args.model_cache,
@@ -441,6 +467,7 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
         max_new_tokens=args.max_new_tokens,
         retries=args.llm_retries,
     )
+    model_setup_seconds = time.perf_counter() - model_setup_started_at
 
     groups: dict[str, list[hhc.Record]] = {}
     for index, row in enumerate(
@@ -494,11 +521,15 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
         "llm_model_calls": totals.model_calls,
         "llm_cache_hits": totals.cache_hits,
         "llm_merges": totals.merges,
+        "llm_prompt_reductions": judge.prompt_reductions,
+        "model_setup_seconds_excluded": round(model_setup_seconds, 3),
         "device": device,
     }
     if rows and "label" in rows[0]:
         summary.update(hhc.evaluate(rows, predictions))
-    summary["runtime_seconds"] = round(time.perf_counter() - started_at, 3)
+    summary["runtime_seconds"] = round(
+        time.perf_counter() - started_at - model_setup_seconds, 3
+    )
     args.metrics_output.parent.mkdir(parents=True, exist_ok=True)
     args.metrics_output.write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"

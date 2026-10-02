@@ -92,8 +92,8 @@ def encode_rows(
     cache_path: Path | None,
     rebuild_cache: bool,
     no_progress: bool,
-) -> tuple[torch.Tensor, bool]:
-    """Return normalized semantic embeddings in input-row order."""
+) -> tuple[torch.Tensor, bool, float, float]:
+    """Return embeddings, cache status, embedding time, and model setup time."""
     fingerprint = embedding_fingerprint(rows, model_name, max_length)
     if cache_path is not None and cache_path.exists() and not rebuild_cache:
         cached = torch.load(cache_path, map_location="cpu", weights_only=True)
@@ -102,9 +102,16 @@ def encode_rows(
             and cached.get("fingerprint") == fingerprint
             and cached.get("model") == model_name
             and isinstance(cached.get("embeddings"), torch.Tensor)
+            and isinstance(cached.get("embedding_seconds"), (int, float))
         ):
-            return cached["embeddings"].float(), True
+            return (
+                cached["embeddings"].float(),
+                True,
+                float(cached["embedding_seconds"]),
+                0.0,
+            )
 
+    model_setup_started_at = time.perf_counter()
     try:
         from transformers import AutoModel, AutoTokenizer
     except ImportError as exc:
@@ -117,6 +124,9 @@ def encode_rows(
     tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=model_cache)
     model = AutoModel.from_pretrained(model_name, cache_dir=model_cache).to(device)
     model.eval()
+    model_setup_seconds = time.perf_counter() - model_setup_started_at
+
+    embedding_started_at = time.perf_counter()
     texts = [document_text(row) for row in rows]
     batches: list[torch.Tensor] = []
     starts = range(0, len(texts), batch_size)
@@ -142,6 +152,7 @@ def encode_rows(
             batches.append(embeddings.cpu())
 
     matrix = torch.cat(batches, dim=0).float()
+    embedding_seconds = time.perf_counter() - embedding_started_at
     if cache_path is not None:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(
@@ -149,11 +160,12 @@ def encode_rows(
                 "fingerprint": fingerprint,
                 "model": model_name,
                 "max_length": max_length,
+                "embedding_seconds": embedding_seconds,
                 "embeddings": matrix.half(),
             },
             cache_path,
         )
-    return matrix, False
+    return matrix, False, embedding_seconds, model_setup_seconds
 
 
 def semantic_second_step(
@@ -221,8 +233,7 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str | bool]:
     rows = hhc.read_rows(args.input, args.limit)
     device = resolve_device(args.device)
 
-    encoding_started_at = time.perf_counter()
-    embeddings, cache_hit = encode_rows(
+    embeddings, cache_hit, embedding_seconds, model_setup_seconds = encode_rows(
         rows,
         args.model,
         args.model_cache,
@@ -233,8 +244,6 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str | bool]:
         args.rebuild_cache,
         args.no_progress,
     )
-    embedding_seconds = time.perf_counter() - encoding_started_at
-
     groups: dict[str, list[hhc.Record]] = defaultdict(list)
     for index, row in enumerate(
         tqdm(
@@ -279,10 +288,15 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str | bool]:
         "device": device,
         "embedding_cache_hit": cache_hit,
         "embedding_seconds": round(embedding_seconds, 3),
+        "model_setup_seconds_excluded": round(model_setup_seconds, 3),
     }
     if rows and "label" in rows[0]:
         summary.update(hhc.evaluate(rows, predictions))
-    summary["runtime_seconds"] = round(time.perf_counter() - started_at, 3)
+    current_run_seconds = time.perf_counter() - started_at - model_setup_seconds
+    summary["current_run_seconds"] = round(current_run_seconds, 3)
+    summary["runtime_seconds"] = round(
+        current_run_seconds + (embedding_seconds if cache_hit else 0.0), 3
+    )
     args.metrics_output.parent.mkdir(parents=True, exist_ok=True)
     args.metrics_output.write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
