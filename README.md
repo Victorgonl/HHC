@@ -137,7 +137,7 @@ The extensed parameters are:
 
 ## Heuristic-Based Hierarchical Clustering with Generative LLM extension (HHC-GM)
 
-[**HHC-GM**](./src/hhc_llm.py) is a separate extension built directly on top
+[**HHC-GM**](./src/hhc_gm.py) is a separate extension built directly on top
 of classic HHC. It first runs both classic HHC stages. A local instruction-tuned
 generative model then judges compatible-name cluster pairs that remain separate.
 The ground-truth `label` is never sent to the model.
@@ -146,7 +146,7 @@ The default model is
 [`HuggingFaceTB/SmolLM2-1.7B-Instruct`](https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct).
 
 ```bash
-python src/hhc_llm.py data/lagosandv1_test.csv \
+python src/hhc_gm.py data/lagosandv1_test.csv \
   --limit 100 \
   --device auto \
   --no-progress
@@ -166,11 +166,11 @@ configured threshold.
 | `--llm-confidence-threshold` | `0.90` | Minimum model confidence for a merge. |
 | `--llm-candidate-min-score` | `0.0` | Minimum classic title/venue score for LLM review. Increase this to reduce calls. |
 | `--max-llm-comparisons-per-group` | `25` | Request budget for each ambiguous-name group; `0` is unlimited. |
-| `--max-records-per-cluster` | `8` | Maximum papers from each cluster included in a prompt. |
+| `--max-records-per-cluster` | `8` | Maximum papers from each cluster included in a prompt; automatically reduced when needed to fit. |
 | `--max-input-tokens` | `2048` | Maximum prompt length. |
 | `--max-new-tokens` | `128` | Maximum generated response length. |
 | `--llm-retries` | `1` | Retries after malformed model output. |
-| `--llm-cache` | `outputs/hhc_llm_cache.jsonl` | Append-only decisions and audit information. |
+| `--llm-cache` | `outputs/hhc_gm_cache.jsonl` | Append-only decisions and audit information. |
 
 ## Results reports
 

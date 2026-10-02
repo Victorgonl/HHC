@@ -1,16 +1,16 @@
 # hhc
-snowballstemmer>=3.0,<4
-tqdm>=4.67,<5
+snowballstemmer
+tqdm
 
 # transformers
---extra-index-url https://download.pytorch.org/whl/cpu
-numpy>=2.0,<3
-sentencepiece>=0.2,<1
-torch==2.14.1+cpu
-transformers>=4.49,<6
+#--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+numpy
+sentencepiece
+transformers
 
 # reports
-pandas>=2.2,<4
-matplotlib>=3.9,<4
-ipykernel>=6.29,<8
-nbconvert>=7.16,<8
+pandas
+matplotlib
+ipykernel
+nbconvert
