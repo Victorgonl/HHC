@@ -1,0 +1,14 @@
+{
+    "editor.formatOnSave": true,
+    "[python]": {
+        "editor.defaultFormatter": "charliermarsh.ruff",
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+            "source.fixAll.ruff": "explicit",
+            "source.organizeImports.ruff": "explicit"
+        }
+    },
+    "python.analysis.typeCheckingMode": "off",
+    "jupyter.notebookFileRoot": "{workspaceFolder}",
+    "python-envs.defaultEnvManager": "ms-python.python:system",
+}
