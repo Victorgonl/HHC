@@ -69,6 +69,12 @@ class PairJudge(Protocol):
         rows: list[dict[str, str]],
     ) -> tuple[LLMDecision, bool]: ...
 
+    def compare_many(
+        self,
+        pairs: list[tuple[hhc.Cluster, hhc.Cluster]],
+        rows: list[dict[str, str]],
+    ) -> list[tuple[LLMDecision, bool]]: ...
+
 
 def resolve_device(requested: str) -> str:
     try:
@@ -198,6 +204,8 @@ class LocalTransformersJudge:
         max_input_tokens: int,
         max_new_tokens: int,
         retries: int,
+        dtype: str,
+        attention_implementation: str,
     ) -> None:
         try:
             import torch
@@ -217,8 +225,19 @@ class LocalTransformersJudge:
         self.max_new_tokens = max_new_tokens
         self.retries = retries
         self.torch = torch
+        self.dtype_name = "float16" if dtype == "auto" and device == "cuda" else dtype
+        dtype_by_name = {
+            "auto": "auto",
+            "float16": torch.float16,
+            "bfloat16": torch.bfloat16,
+            "float32": torch.float32,
+        }
+        model_dtype = dtype_by_name[self.dtype_name]
+        self.attention_implementation = attention_implementation
         self.prompt_reductions = 0
         self.invalid_response_count = 0
+        self.generation_batches = 0
+        self.oom_batch_splits = 0
         self.prompt_cache: dict[tuple[tuple[int, ...], tuple[int, ...]], str] = {}
         self.cache: dict[str, dict[str, Any]] = {}
         if cache_path is not None and cache_path.exists():
@@ -242,11 +261,15 @@ class LocalTransformersJudge:
             model_name, cache_dir=model_cache
         )
         self.model = AutoModelForCausalLM.from_pretrained(
-            model_name, cache_dir=model_cache, torch_dtype="auto"
+            model_name,
+            cache_dir=model_cache,
+            torch_dtype=model_dtype,
+            attn_implementation=attention_implementation,
         ).to(device)
         self.model.eval()
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+        self.tokenizer.padding_side = "left"
 
     def _render(self, user_prompt: str) -> str:
         messages = [
@@ -299,6 +322,21 @@ class LocalTransformersJudge:
         rows: list[dict[str, str]],
     ) -> str:
         prompt = self._prompt(left, right, rows)
+        material = (
+            f"{PROMPT_VERSION}\0{self.model_name}\0{self.dtype_name}\0"
+            f"{self.attention_implementation}\0{self.max_new_tokens}\0"
+            f"{self.retries}\0{prompt}"
+        ).encode()
+        return hashlib.sha256(material).hexdigest()
+
+    def _legacy_cache_key(
+        self,
+        left: hhc.Cluster,
+        right: hhc.Cluster,
+        rows: list[dict[str, str]],
+    ) -> str:
+        """Read decisions written before inference settings entered cache keys."""
+        prompt = self._prompt(left, right, rows)
         material = f"{PROMPT_VERSION}\0{self.model_name}\0{prompt}".encode()
         return hashlib.sha256(material).hexdigest()
 
@@ -312,10 +350,11 @@ class LocalTransformersJudge:
                 json.dumps(persisted, ensure_ascii=False, sort_keys=True) + "\n"
             )
 
-    def _generate(self, prompt: str) -> str:
-        rendered = self._render(prompt)
+    def _generate_many(self, prompts: list[str]) -> list[str]:
+        rendered = [self._render(prompt) for prompt in prompts]
         tokens = self.tokenizer(
             rendered,
+            padding=True,
             return_tensors="pt",
         ).to(self.device)
         input_length = tokens["input_ids"].shape[1]
@@ -325,16 +364,33 @@ class LocalTransformersJudge:
                 f"--max-input-tokens {self.max_input_tokens}; reduce "
                 "--max-records-per-cluster or increase the token limit"
             )
-        with self.torch.inference_mode():
-            output = self.model.generate(
-                **tokens,
-                do_sample=False,
-                max_new_tokens=self.max_new_tokens,
-                pad_token_id=self.tokenizer.pad_token_id,
+        try:
+            with self.torch.inference_mode():
+                output = self.model.generate(
+                    **tokens,
+                    do_sample=False,
+                    max_new_tokens=self.max_new_tokens,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                    use_cache=True,
+                )
+        except self.torch.OutOfMemoryError:
+            if len(prompts) == 1:
+                raise
+            self.oom_batch_splits += 1
+            del tokens
+            self.torch.cuda.empty_cache()
+            midpoint = len(prompts) // 2
+            return self._generate_many(prompts[:midpoint]) + self._generate_many(
+                prompts[midpoint:]
             )
-        return self.tokenizer.decode(
-            output[0, input_length:], skip_special_tokens=True
-        ).strip()
+        self.generation_batches += 1
+        return [
+            self.tokenizer.decode(item[input_length:], skip_special_tokens=True).strip()
+            for item in output
+        ]
+
+    def _generate(self, prompt: str) -> str:
+        return self._generate_many([prompt])[0]
 
     def compare(
         self,
@@ -342,66 +398,105 @@ class LocalTransformersJudge:
         right: hhc.Cluster,
         rows: list[dict[str, str]],
     ) -> tuple[LLMDecision, bool]:
-        key = self.cache_key(left, right, rows)
-        cached = self.cache.get(key)
-        if isinstance(cached, dict):
-            try:
-                return parse_decision(json.dumps(cached)), True
-            except ValueError:
-                pass
+        return self.compare_many([(left, right)], rows)[0]
 
-        prompt = self._prompt(left, right, rows)
-        invalid_responses: list[dict[str, str]] = []
+    def _cache_entry(
+        self,
+        decision: LLMDecision,
+        left: hhc.Cluster,
+        right: hhc.Cluster,
+        rows: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        entry: dict[str, Any] = asdict(decision)
+        entry["model"] = self.model_name
+        entry["dtype"] = self.dtype_name
+        entry["attention_implementation"] = self.attention_implementation
+        entry["left_paper_ids"] = sorted(
+            rows[record.index]["paper_id"] for record in left.records
+        )
+        entry["right_paper_ids"] = sorted(
+            rows[record.index]["paper_id"] for record in right.records
+        )
+        return entry
+
+    def compare_many(
+        self,
+        pairs: list[tuple[hhc.Cluster, hhc.Cluster]],
+        rows: list[dict[str, str]],
+    ) -> list[tuple[LLMDecision, bool]]:
+        """Judge cluster pairs together while retaining per-pair cache entries."""
+        results: list[tuple[LLMDecision, bool] | None] = [None] * len(pairs)
+        pending: list[dict[str, Any]] = []
+        for index, (left, right) in enumerate(pairs):
+            key = self.cache_key(left, right, rows)
+            cached = self.cache.get(key)
+            if cached is None:
+                cached = self.cache.get(self._legacy_cache_key(left, right, rows))
+            if isinstance(cached, dict):
+                try:
+                    results[index] = (parse_decision(json.dumps(cached)), True)
+                    continue
+                except ValueError:
+                    pass
+            pending.append(
+                {
+                    "index": index,
+                    "key": key,
+                    "left": left,
+                    "right": right,
+                    "prompt": self._prompt(left, right, rows),
+                    "invalid_responses": [],
+                }
+            )
+
+        unresolved = pending
         for attempt in range(self.retries + 1):
-            retry_prompt = prompt
-            if attempt:
-                retry_prompt += RETRY_INSTRUCTION
-            response = self._generate(retry_prompt)
-            try:
-                decision = parse_decision(response)
-            except ValueError as exc:
-                invalid_responses.append(
-                    {"error": str(exc), "response": response[:2000]}
-                )
-                continue
-            cache_entry: dict[str, Any] = asdict(decision)
-            cache_entry["model"] = self.model_name
-            cache_entry["left_paper_ids"] = sorted(
-                rows[record.index]["paper_id"] for record in left.records
-            )
-            cache_entry["right_paper_ids"] = sorted(
-                rows[record.index]["paper_id"] for record in right.records
-            )
-            self.cache[key] = cache_entry
-            self._save_cache(key, cache_entry)
-            return decision, False
+            if not unresolved:
+                break
+            prompts = [
+                item["prompt"] + (RETRY_INSTRUCTION if attempt else "")
+                for item in unresolved
+            ]
+            responses = self._generate_many(prompts)
+            retry_items: list[dict[str, Any]] = []
+            for item, response in zip(unresolved, responses, strict=True):
+                try:
+                    decision = parse_decision(response)
+                except ValueError as exc:
+                    item["invalid_responses"].append(
+                        {"error": str(exc), "response": response[:2000]}
+                    )
+                    retry_items.append(item)
+                    continue
 
-        self.invalid_response_count += 1
-        decision = LLMDecision(
-            same_author=False,
-            confidence=0.0,
-            reason=(
-                f"Model returned invalid JSON after {self.retries + 1} attempts; "
-                "clusters were conservatively left separate."
-            ),
-        )
-        cache_entry = asdict(decision)
-        cache_entry.update(
-            {
-                "model": self.model_name,
-                "left_paper_ids": sorted(
-                    rows[record.index]["paper_id"] for record in left.records
+                cache_entry = self._cache_entry(
+                    decision, item["left"], item["right"], rows
+                )
+                self.cache[item["key"]] = cache_entry
+                self._save_cache(item["key"], cache_entry)
+                results[item["index"]] = (decision, False)
+            unresolved = retry_items
+
+        for item in unresolved:
+            self.invalid_response_count += 1
+            decision = LLMDecision(
+                same_author=False,
+                confidence=0.0,
+                reason=(
+                    f"Model returned invalid JSON after {self.retries + 1} "
+                    "attempts; clusters were conservatively left separate."
                 ),
-                "right_paper_ids": sorted(
-                    rows[record.index]["paper_id"] for record in right.records
-                ),
-                "parse_failure": True,
-                "invalid_responses": invalid_responses,
-            }
-        )
-        self.cache[key] = cache_entry
-        self._save_cache(key, cache_entry)
-        return decision, False
+            )
+            cache_entry = self._cache_entry(decision, item["left"], item["right"], rows)
+            cache_entry["parse_failure"] = True
+            cache_entry["invalid_responses"] = item["invalid_responses"]
+            self.cache[item["key"]] = cache_entry
+            self._save_cache(item["key"], cache_entry)
+            results[item["index"]] = (decision, False)
+
+        if any(result is None for result in results):
+            raise RuntimeError("internal error: missing batched LLM decision")
+        return [result for result in results if result is not None]
 
 
 def candidate_score(left: hhc.Cluster, right: hhc.Cluster) -> float:
@@ -419,6 +514,7 @@ def llm_second_step(
     confidence_threshold: float,
     candidate_min_score: float,
     max_comparisons: int,
+    generation_batch_size: int = 1,
 ) -> tuple[list[hhc.Cluster], LLMStageStats]:
     """Agglomerate unresolved clusters using bounded, cached LLM decisions."""
     stats = LLMStageStats()
@@ -441,20 +537,35 @@ def llm_second_step(
 
         candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
         merged = False
-        for _, i, j, key in candidates:
-            if max_comparisons and stats.comparisons >= max_comparisons:
+        offset = 0
+        while offset < len(candidates):
+            remaining_budget = (
+                max_comparisons - stats.comparisons
+                if max_comparisons
+                else generation_batch_size
+            )
+            if remaining_budget <= 0:
                 break
-            decision, cache_hit = judge.compare(clusters[i], clusters[j], rows)
-            reviewed.add(key)
-            stats.comparisons += 1
-            stats.cache_hits += int(cache_hit)
-            stats.model_calls += int(not cache_hit)
-            if decision.same_author and decision.confidence >= confidence_threshold:
-                clusters[i].merge(clusters[j])
-                clusters.pop(j)
-                stats.merges += 1
-                merged = True
+            batch_size = min(generation_batch_size, remaining_budget)
+            batch = candidates[offset : offset + batch_size]
+            pairs = [(clusters[i], clusters[j]) for _, i, j, _ in batch]
+            decisions = judge.compare_many(pairs, rows)
+            for (_, _, _, key), (_, cache_hit) in zip(batch, decisions, strict=True):
+                reviewed.add(key)
+                stats.comparisons += 1
+                stats.cache_hits += int(cache_hit)
+                stats.model_calls += int(not cache_hit)
+
+            for (_, i, j, _), (decision, _) in zip(batch, decisions, strict=True):
+                if decision.same_author and decision.confidence >= confidence_threshold:
+                    clusters[i].merge(clusters[j])
+                    clusters.pop(j)
+                    stats.merges += 1
+                    merged = True
+                    break
+            if merged:
                 break
+            offset += len(batch)
         if not merged:
             break
     return clusters, stats
@@ -493,6 +604,8 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
         max_input_tokens=args.max_input_tokens,
         max_new_tokens=args.max_new_tokens,
         retries=args.llm_retries,
+        dtype=args.dtype,
+        attention_implementation=args.attention_implementation,
     )
     model_setup_seconds = time.perf_counter() - model_setup_started_at
 
@@ -524,6 +637,7 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             args.llm_confidence_threshold,
             args.llm_candidate_min_score,
             args.max_llm_comparisons_per_group,
+            args.generation_batch_size,
         )
         totals.add(stats)
         for number, cluster in enumerate(clusters, start=1):
@@ -550,6 +664,11 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
         "llm_merges": totals.merges,
         "llm_prompt_reductions": judge.prompt_reductions,
         "llm_invalid_responses": judge.invalid_response_count,
+        "generation_batch_size": args.generation_batch_size,
+        "generation_batches": judge.generation_batches,
+        "oom_batch_splits": judge.oom_batch_splits,
+        "dtype": judge.dtype_name,
+        "attention_implementation": judge.attention_implementation,
         "model_setup_seconds_excluded": round(model_setup_seconds, 3),
         "device": device,
     }
@@ -584,6 +703,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="directory for downloaded Hugging Face models (default: models)",
     )
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
+    parser.add_argument(
+        "--dtype",
+        choices=("auto", "float16", "bfloat16", "float32"),
+        default="auto",
+        help="model dtype; auto uses float16 on CUDA and model default on CPU",
+    )
+    parser.add_argument(
+        "--attention-implementation",
+        choices=("sdpa", "eager"),
+        default="sdpa",
+    )
     parser.add_argument("--title-threshold", type=float, default=0.30)
     parser.add_argument("--venue-threshold", type=float, default=0.50)
     parser.add_argument("--llm-confidence-threshold", type=float, default=0.90)
@@ -602,6 +732,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-records-per-cluster", type=int, default=8)
     parser.add_argument("--max-input-tokens", type=int, default=2048)
     parser.add_argument("--max-new-tokens", type=int, default=128)
+    parser.add_argument(
+        "--generation-batch-size",
+        type=int,
+        default=4,
+        help="cluster-pair prompts generated together (default: 4)",
+    )
     parser.add_argument("--llm-retries", type=int, default=1)
     parser.add_argument(
         "--llm-cache", type=Path, default=Path("outputs/hhc_gm_cache.jsonl")
@@ -628,6 +764,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "max_records_per_cluster",
         "max_input_tokens",
         "max_new_tokens",
+        "generation_batch_size",
     ):
         if getattr(args, name) < 1:
             parser.error(f"--{name.replace('_', '-')} must be positive")

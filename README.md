@@ -165,12 +165,15 @@ the clusters separate, and continues processing.
 | `--model` | `HuggingFaceTB/SmolLM2-1.7B-Instruct` | Hugging Face causal/instruction model. |
 | `--model-cache` | `models` | Directory for downloaded Hugging Face model files. |
 | `--device` | `auto` | Use CUDA when available, otherwise CPU. |
+| `--dtype` | `auto` | Use FP16 on CUDA; use the model default on CPU. |
+| `--attention-implementation` | `sdpa` | PyTorch scaled dot-product attention implementation. |
 | `--llm-confidence-threshold` | `0.90` | Minimum model confidence for a merge. |
 | `--llm-candidate-min-score` | `0.0` | Minimum classic title/venue score for LLM review. Increase this to reduce calls. |
 | `--max-llm-comparisons-per-group` | `25` | Request budget for each ambiguous-name group; `0` is unlimited. |
 | `--max-records-per-cluster` | `8` | Maximum papers from each cluster included in a prompt; automatically reduced when needed to fit. |
 | `--max-input-tokens` | `2048` | Maximum prompt length. |
 | `--max-new-tokens` | `128` | Maximum generated response length. |
+| `--generation-batch-size` | `4` | Cluster-pair prompts generated together; oversized CUDA batches split automatically. |
 | `--llm-retries` | `1` | Retries after malformed model output. |
 | `--llm-cache` | `outputs/hhc_gm_cache.jsonl` | Append-only decisions and audit information. |
 
