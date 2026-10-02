@@ -137,10 +137,10 @@ The extensed parameters are:
 
 ## Heuristic-Based Hierarchical Clustering with Generative LLM extension (HHC-GM)
 
-[**HHC-GM**](./src/hhc_gm.py) is a separate extension built directly on top
-of classic HHC. It first runs both classic HHC stages. A local instruction-tuned
-generative model then judges compatible-name cluster pairs that remain separate.
-The ground-truth `label` is never sent to the model.
+[**HHC-GM**](./src/hhc_gm.py) first runs both classic HHC stages, uses cached
+SemCSE cluster embeddings to retain only plausible semantic neighbors, and then
+asks a local instruction-tuned generative model to judge those pairs. The
+ground-truth `label` is never sent to either model.
 
 The default model is
 [`HuggingFaceTB/SmolLM2-1.7B-Instruct`](https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct).
@@ -163,16 +163,22 @@ the clusters separate, and continues processing.
 | Option | Default | Purpose |
 |---|---|---|
 | `--model` | `HuggingFaceTB/SmolLM2-1.7B-Instruct` | Hugging Face causal/instruction model. |
+| `--embedding-model` | `CLAUSE-Bielefeld/SemCSE_cosine` | Model used for semantic candidate retrieval. |
 | `--model-cache` | `models` | Directory for downloaded Hugging Face model files. |
 | `--device` | `auto` | Use CUDA when available, otherwise CPU. |
 | `--dtype` | `auto` | Use FP16 on CUDA; use the model default on CPU. |
 | `--attention-implementation` | `sdpa` | PyTorch scaled dot-product attention implementation. |
 | `--llm-confidence-threshold` | `0.90` | Minimum model confidence for a merge. |
-| `--llm-candidate-min-score` | `0.0` | Minimum classic title/venue score for LLM review. Increase this to reduce calls. |
+| `--semantic-candidate-threshold` | `0.55` | Minimum cluster embedding cosine for LLM review. |
+| `--semantic-top-k` | `5` | Semantic neighbors retained per cluster; `0` is unlimited. |
+| `--llm-candidate-min-score` | `0.0` | Optional additional classic title/venue filter. |
 | `--max-llm-comparisons-per-group` | `25` | Request budget for each ambiguous-name group; `0` is unlimited. |
 | `--max-records-per-cluster` | `8` | Maximum papers from each cluster included in a prompt; automatically reduced when needed to fit. |
 | `--max-input-tokens` | `2048` | Maximum prompt length. |
 | `--max-new-tokens` | `128` | Maximum generated response length. |
+| `--embedding-batch-size` | `32` | SemCSE inference batch size. |
+| `--embedding-max-length` | `256` | Maximum semantic-document token count. |
+| `--embedding-cache` | `outputs/hhc_gm_semantic_embeddings.pt` | Cached embeddings and original computation time. |
 | `--generation-batch-size` | `4` | Cluster-pair prompts generated together; oversized CUDA batches split automatically. |
 | `--llm-retries` | `1` | Retries after malformed model output. |
 | `--llm-cache` | `outputs/hhc_gm_cache.jsonl` | Append-only decisions and audit information. |
