@@ -218,6 +218,7 @@ class LocalTransformersJudge:
         self.retries = retries
         self.torch = torch
         self.prompt_reductions = 0
+        self.invalid_response_count = 0
         self.prompt_cache: dict[tuple[tuple[int, ...], tuple[int, ...]], str] = {}
         self.cache: dict[str, dict[str, Any]] = {}
         if cache_path is not None and cache_path.exists():
@@ -350,7 +351,7 @@ class LocalTransformersJudge:
                 pass
 
         prompt = self._prompt(left, right, rows)
-        last_error: ValueError | None = None
+        invalid_responses: list[dict[str, str]] = []
         for attempt in range(self.retries + 1):
             retry_prompt = prompt
             if attempt:
@@ -359,7 +360,9 @@ class LocalTransformersJudge:
             try:
                 decision = parse_decision(response)
             except ValueError as exc:
-                last_error = exc
+                invalid_responses.append(
+                    {"error": str(exc), "response": response[:2000]}
+                )
                 continue
             cache_entry: dict[str, Any] = asdict(decision)
             cache_entry["model"] = self.model_name
@@ -372,9 +375,33 @@ class LocalTransformersJudge:
             self.cache[key] = cache_entry
             self._save_cache(key, cache_entry)
             return decision, False
-        raise RuntimeError(
-            f"model failed to return valid JSON after {self.retries + 1} attempts"
-        ) from last_error
+
+        self.invalid_response_count += 1
+        decision = LLMDecision(
+            same_author=False,
+            confidence=0.0,
+            reason=(
+                f"Model returned invalid JSON after {self.retries + 1} attempts; "
+                "clusters were conservatively left separate."
+            ),
+        )
+        cache_entry = asdict(decision)
+        cache_entry.update(
+            {
+                "model": self.model_name,
+                "left_paper_ids": sorted(
+                    rows[record.index]["paper_id"] for record in left.records
+                ),
+                "right_paper_ids": sorted(
+                    rows[record.index]["paper_id"] for record in right.records
+                ),
+                "parse_failure": True,
+                "invalid_responses": invalid_responses,
+            }
+        )
+        self.cache[key] = cache_entry
+        self._save_cache(key, cache_entry)
+        return decision, False
 
 
 def candidate_score(left: hhc.Cluster, right: hhc.Cluster) -> float:
@@ -522,6 +549,7 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
         "llm_cache_hits": totals.cache_hits,
         "llm_merges": totals.merges,
         "llm_prompt_reductions": judge.prompt_reductions,
+        "llm_invalid_responses": judge.invalid_response_count,
         "model_setup_seconds_excluded": round(model_setup_seconds, 3),
         "device": device,
     }
