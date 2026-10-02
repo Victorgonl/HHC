@@ -1,8 +1,8 @@
-"""HHC-GM: classic HHC followed by a generative-LLM merge stage.
+"""HHC-GM: classic HHC plus semantic retrieval and a generative-LLM judge.
 
 The language model is deliberately used only as a conservative judge of cluster
-pairs left unresolved by both stages of classic HHC.  Ground-truth labels are
-never included in a model prompt.
+pairs left unresolved by both stages of classic HHC and shortlisted with
+semantic embeddings. Ground-truth labels are never included in a model prompt.
 """
 
 from __future__ import annotations
@@ -20,9 +20,10 @@ from typing import Any, Protocol
 from tqdm import tqdm
 
 try:
-    from src import hhc
+    from src import hhc, hhc_se
 except ImportError:  # Supports ``python src/hhc_gm.py``.
     import hhc  # type: ignore[no-redef]
+    import hhc_se  # type: ignore[no-redef]
 
 
 DEFAULT_MODEL = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
@@ -507,12 +508,66 @@ def candidate_score(left: hhc.Cluster, right: hhc.Cluster) -> float:
     )
 
 
+def semantic_candidate_scores(
+    clusters: list[hhc.Cluster],
+    record_embeddings: Any,
+    threshold: float,
+    top_k: int,
+) -> dict[tuple[int, int], float]:
+    """Return semantically plausible name-compatible cluster pairs.
+
+    ``top_k`` is applied per cluster and the union of those neighbor lists is
+    retained, so a pair survives when either cluster considers the other a top
+    neighbor. A value of zero disables the neighbor limit.
+    """
+    if len(clusters) < 2:
+        return {}
+
+    vectors = []
+    for cluster in clusters:
+        indices = [record.index for record in cluster.records]
+        vectors.append(record_embeddings[indices].sum(dim=0))
+    matrix = hhc_se.functional.normalize(
+        hhc_se.torch.stack(vectors), p=2, dim=-1
+    )
+    similarities = matrix @ matrix.T
+
+    neighbors: dict[int, list[tuple[float, int]]] = {
+        index: [] for index in range(len(clusters))
+    }
+    scores: dict[tuple[int, int], float] = {}
+    for i, left in enumerate(clusters):
+        for j in range(i + 1, len(clusters)):
+            right = clusters[j]
+            if not hhc.names_similar(left.names[0], right.names[0]):
+                continue
+            similarity = float(similarities[i, j].item())
+            if similarity < threshold:
+                continue
+            scores[(i, j)] = similarity
+            neighbors[i].append((similarity, j))
+            neighbors[j].append((similarity, i))
+
+    if top_k == 0:
+        return scores
+
+    selected: set[tuple[int, int]] = set()
+    for i, options in neighbors.items():
+        options.sort(key=lambda item: (-item[0], item[1]))
+        for _, j in options[:top_k]:
+            selected.add((min(i, j), max(i, j)))
+    return {pair: scores[pair] for pair in selected}
+
+
 def llm_second_step(
     clusters: list[hhc.Cluster],
     rows: list[dict[str, str]],
+    record_embeddings: Any,
     judge: PairJudge,
     confidence_threshold: float,
     candidate_min_score: float,
+    semantic_candidate_threshold: float,
+    semantic_top_k: int,
     max_comparisons: int,
     generation_batch_size: int = 1,
 ) -> tuple[list[hhc.Cluster], LLMStageStats]:
@@ -520,22 +575,25 @@ def llm_second_step(
     stats = LLMStageStats()
     reviewed: set[str] = set()
     while max_comparisons == 0 or stats.comparisons < max_comparisons:
-        candidates: list[tuple[float, int, int, str]] = []
-        for i, left in enumerate(clusters):
-            for j in range(i + 1, len(clusters)):
-                right = clusters[j]
-                if not hhc.names_similar(left.names[0], right.names[0]):
-                    continue
-                score = candidate_score(left, right)
-                if score < candidate_min_score:
-                    continue
-                key = judge.cache_key(left, right, rows)
-                if key not in reviewed:
-                    candidates.append((score, i, j, key))
+        candidates: list[tuple[float, float, int, int, str]] = []
+        semantic_scores = semantic_candidate_scores(
+            clusters,
+            record_embeddings,
+            semantic_candidate_threshold,
+            semantic_top_k,
+        )
+        for (i, j), semantic_score in semantic_scores.items():
+            left, right = clusters[i], clusters[j]
+            lexical_score = candidate_score(left, right)
+            if lexical_score < candidate_min_score:
+                continue
+            key = judge.cache_key(left, right, rows)
+            if key not in reviewed:
+                candidates.append((semantic_score, lexical_score, i, j, key))
         if not candidates:
             break
 
-        candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
+        candidates.sort(key=lambda item: (-item[0], -item[1], item[2], item[3]))
         merged = False
         offset = 0
         while offset < len(candidates):
@@ -548,15 +606,19 @@ def llm_second_step(
                 break
             batch_size = min(generation_batch_size, remaining_budget)
             batch = candidates[offset : offset + batch_size]
-            pairs = [(clusters[i], clusters[j]) for _, i, j, _ in batch]
+            pairs = [(clusters[i], clusters[j]) for _, _, i, j, _ in batch]
             decisions = judge.compare_many(pairs, rows)
-            for (_, _, _, key), (_, cache_hit) in zip(batch, decisions, strict=True):
+            for (_, _, _, _, key), (_, cache_hit) in zip(
+                batch, decisions, strict=True
+            ):
                 reviewed.add(key)
                 stats.comparisons += 1
                 stats.cache_hits += int(cache_hit)
                 stats.model_calls += int(not cache_hit)
 
-            for (_, i, j, _), (decision, _) in zip(batch, decisions, strict=True):
+            for (_, _, i, j, _), (decision, _) in zip(
+                batch, decisions, strict=True
+            ):
                 if decision.same_author and decision.confidence >= confidence_threshold:
                     clusters[i].merge(clusters[j])
                     clusters.pop(j)
@@ -590,11 +652,31 @@ def write_predictions(
             )
 
 
-def run(args: argparse.Namespace) -> dict[str, float | int | str]:
+def run(args: argparse.Namespace) -> dict[str, float | int | str | bool]:
     started_at = time.perf_counter()
     rows = hhc.read_rows(args.input, args.limit)
     device = resolve_device(args.device)
-    model_setup_started_at = time.perf_counter()
+
+    (
+        record_embeddings,
+        embedding_cache_hit,
+        embedding_seconds,
+        embedding_model_setup_seconds,
+    ) = hhc_se.encode_rows(
+        rows,
+        args.embedding_model,
+        args.model_cache,
+        args.embedding_batch_size,
+        args.embedding_max_length,
+        device,
+        args.embedding_cache,
+        args.rebuild_embedding_cache,
+        args.no_progress,
+    )
+    if device == "cuda":
+        hhc_se.torch.cuda.empty_cache()
+
+    generative_model_setup_started_at = time.perf_counter()
     judge = LocalTransformersJudge(
         model_name=args.model,
         model_cache=args.model_cache,
@@ -607,7 +689,12 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
         dtype=args.dtype,
         attention_implementation=args.attention_implementation,
     )
-    model_setup_seconds = time.perf_counter() - model_setup_started_at
+    generative_model_setup_seconds = (
+        time.perf_counter() - generative_model_setup_started_at
+    )
+    model_setup_seconds = (
+        embedding_model_setup_seconds + generative_model_setup_seconds
+    )
 
     groups: dict[str, list[hhc.Record]] = {}
     for index, row in enumerate(
@@ -633,9 +720,12 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
         clusters, stats = llm_second_step(
             clusters,
             rows,
+            record_embeddings,
             judge,
             args.llm_confidence_threshold,
             args.llm_candidate_min_score,
+            args.semantic_candidate_threshold,
+            args.semantic_top_k,
             args.max_llm_comparisons_per_group,
             args.generation_batch_size,
         )
@@ -646,9 +736,10 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
                 predictions[record.index] = cluster_id
 
     write_predictions(args.output, rows, predictions)
-    summary: dict[str, float | int | str] = {
+    summary: dict[str, float | int | str | bool] = {
         "method": "HHC-GM",
         "model": args.model,
+        "embedding_model": args.embedding_model,
         "model_cache": str(args.model_cache),
         "input": str(args.input),
         "output": str(args.output),
@@ -657,6 +748,8 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
         "venue_threshold": args.venue_threshold,
         "llm_confidence_threshold": args.llm_confidence_threshold,
         "llm_candidate_min_score": args.llm_candidate_min_score,
+        "semantic_candidate_threshold": args.semantic_candidate_threshold,
+        "semantic_top_k": args.semantic_top_k,
         "max_llm_comparisons_per_group": args.max_llm_comparisons_per_group,
         "llm_comparisons": totals.comparisons,
         "llm_model_calls": totals.model_calls,
@@ -669,13 +762,19 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
         "oom_batch_splits": judge.oom_batch_splits,
         "dtype": judge.dtype_name,
         "attention_implementation": judge.attention_implementation,
+        "embedding_cache": str(args.embedding_cache),
+        "embedding_cache_hit": embedding_cache_hit,
+        "embedding_seconds": round(embedding_seconds, 3),
         "model_setup_seconds_excluded": round(model_setup_seconds, 3),
         "device": device,
     }
     if rows and "label" in rows[0]:
         summary.update(hhc.evaluate(rows, predictions))
+    current_run_seconds = time.perf_counter() - started_at - model_setup_seconds
+    summary["current_run_seconds"] = round(current_run_seconds, 3)
     summary["runtime_seconds"] = round(
-        time.perf_counter() - started_at - model_setup_seconds, 3
+        current_run_seconds + (embedding_seconds if embedding_cache_hit else 0.0),
+        3,
     )
     args.metrics_output.parent.mkdir(parents=True, exist_ok=True)
     args.metrics_output.write_text(
@@ -696,6 +795,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=Path("outputs/hhc_gm_metrics.json"),
     )
     parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--embedding-model", default=hhc_se.DEFAULT_MODEL)
     parser.add_argument(
         "--model-cache",
         type=Path,
@@ -718,6 +818,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--venue-threshold", type=float, default=0.50)
     parser.add_argument("--llm-confidence-threshold", type=float, default=0.90)
     parser.add_argument(
+        "--semantic-candidate-threshold",
+        type=float,
+        default=0.55,
+        help="minimum cluster embedding cosine for LLM review (default: 0.55)",
+    )
+    parser.add_argument(
+        "--semantic-top-k",
+        type=int,
+        default=5,
+        help="semantic neighbors retained per cluster; 0 is unlimited (default: 5)",
+    )
+    parser.add_argument(
         "--llm-candidate-min-score",
         type=float,
         default=0.0,
@@ -732,6 +844,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-records-per-cluster", type=int, default=8)
     parser.add_argument("--max-input-tokens", type=int, default=2048)
     parser.add_argument("--max-new-tokens", type=int, default=128)
+    parser.add_argument("--embedding-batch-size", type=int, default=32)
+    parser.add_argument("--embedding-max-length", type=int, default=256)
+    parser.add_argument(
+        "--embedding-cache",
+        type=Path,
+        default=Path("outputs/hhc_gm_semantic_embeddings.pt"),
+    )
+    parser.add_argument("--rebuild-embedding-cache", action="store_true")
     parser.add_argument(
         "--generation-batch-size",
         type=int,
@@ -754,6 +874,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ):
         if not 0 <= getattr(args, name) <= 1:
             parser.error(f"--{name.replace('_', '-')} must be between 0 and 1")
+    if not -1 <= args.semantic_candidate_threshold <= 1:
+        parser.error("--semantic-candidate-threshold must be between -1 and 1")
     for name in (
         "max_llm_comparisons_per_group",
         "llm_retries",
@@ -765,11 +887,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "max_input_tokens",
         "max_new_tokens",
         "generation_batch_size",
+        "embedding_batch_size",
+        "embedding_max_length",
     ):
         if getattr(args, name) < 1:
             parser.error(f"--{name.replace('_', '-')} must be positive")
     if args.limit is not None and args.limit < 1:
         parser.error("--limit must be positive")
+    if args.semantic_top_k < 0:
+        parser.error("--semantic-top-k cannot be negative")
     return args
 
 
