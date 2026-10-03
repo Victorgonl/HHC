@@ -154,8 +154,15 @@ python src/hhc_gm.py data/lagosandv1_test.csv \
 
 For each proposed pair, the model receives a bounded, label-free JSON summary
 containing author-name forms, paper identifiers, coauthors, titles, and venues.
-It must return a JSON decision with `same_author`, `confidence`, and a short
-reason. A merge requires both compatible names and confidence at or above the
+It also receives one likely-positive and one likely-negative live example when
+the input contains suitable examples. HHC-GM builds these without labels: hard
+positives have compatible names and a shared coauthor but weak semantic overlap;
+hard negatives have conflicting full names and no shared coauthor despite strong
+semantic overlap. For each target pair, it randomly chooses from the most
+embedding-similar examples using a reproducible seed.
+
+The model returns `same_author`, `same_author_probability`, and a short reason.
+A merge requires both compatible names and decision confidence at or above the
 configured threshold. If the model still returns malformed output after all
 retries, HHC-GM records the responses in its audit cache, conservatively leaves
 the clusters separate, and continues processing.
@@ -173,6 +180,9 @@ the clusters separate, and continues processing.
 | `--semantic-top-k` | `5` | Semantic neighbors retained per cluster; `0` is unlimited. |
 | `--llm-candidate-min-score` | `0.0` | Optional additional classic title/venue filter. |
 | `--max-llm-comparisons-per-group` | `25` | Request budget for each ambiguous-name group; `0` is unlimited. |
+| `--few-shot-example-pool-size` | `512` | Maximum live hard-example bank size; `0` disables examples. |
+| `--few-shot-example-top-k` | `8` | Randomly select each example among the nearest semantic pairs. |
+| `--few-shot-example-seed` | `13` | Reproducible random example-selection seed. |
 | `--max-records-per-cluster` | `8` | Maximum papers from each cluster included in a prompt; automatically reduced when needed to fit. |
 | `--max-input-tokens` | `2048` | Maximum prompt length. |
 | `--max-new-tokens` | `128` | Maximum generated response length. |
