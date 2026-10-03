@@ -12,6 +12,7 @@ import ast
 import csv
 import hashlib
 import json
+import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -508,6 +509,21 @@ def candidate_score(left: hhc.Cluster, right: hhc.Cluster) -> float:
     )
 
 
+def labeled_merge_is_correct(
+    left: hhc.Cluster,
+    right: hhc.Cluster,
+    rows: list[dict[str, str]],
+) -> bool | None:
+    """Check a proposed merge against labels without exposing them to the LLM."""
+    labels: set[str] = set()
+    for record in (*left.records, *right.records):
+        label = rows[record.index].get("label", "").strip()
+        if not label:
+            return None
+        labels.add(label)
+    return len(labels) == 1
+
+
 def semantic_candidate_scores(
     clusters: list[hhc.Cluster],
     record_embeddings: Any,
@@ -570,6 +586,7 @@ def llm_second_step(
     semantic_top_k: int,
     max_comparisons: int,
     generation_batch_size: int = 1,
+    group_name: str = "",
 ) -> tuple[list[hhc.Cluster], LLMStageStats]:
     """Agglomerate unresolved clusters using bounded, cached LLM decisions."""
     stats = LLMStageStats()
@@ -616,10 +633,38 @@ def llm_second_step(
                 stats.cache_hits += int(cache_hit)
                 stats.model_calls += int(not cache_hit)
 
-            for (_, _, i, j, _), (decision, _) in zip(
+            for (
+                semantic_score,
+                lexical_score,
+                i,
+                j,
+                _,
+            ), (decision, cache_hit) in zip(
                 batch, decisions, strict=True
             ):
                 if decision.same_author and decision.confidence >= confidence_threshold:
+                    left = clusters[i]
+                    right = clusters[j]
+                    reason = " ".join(decision.reason.split())
+                    if len(reason) > 160:
+                        reason = reason[:157] + "..."
+                    detail = (
+                        f"HHC-GM merge [{group_name or 'unknown group'}]: "
+                        f"{left.names[0]!r} ({len(left.records)} records) + "
+                        f"{right.names[0]!r} ({len(right.records)} records); "
+                        f"semantic={semantic_score:.3f}, lexical={lexical_score:.3f}, "
+                        f"confidence={decision.confidence:.3f}, "
+                        f"decision={'cache' if cache_hit else 'model'}"
+                    )
+                    if reason:
+                        detail += f"; reason={reason}"
+                    labeled_correctness = labeled_merge_is_correct(left, right, rows)
+                    if labeled_correctness is not None:
+                        detail += (
+                            "; labeled_merge="
+                            + ("correct" if labeled_correctness else "incorrect")
+                        )
+                    tqdm.write(detail, file=sys.stderr)
                     clusters[i].merge(clusters[j])
                     clusters.pop(j)
                     stats.merges += 1
@@ -728,6 +773,7 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str | bool]:
             args.semantic_top_k,
             args.max_llm_comparisons_per_group,
             args.generation_batch_size,
+            ambiguous_name,
         )
         totals.add(stats)
         for number, cluster in enumerate(clusters, start=1):
