@@ -137,61 +137,56 @@ The extensed parameters are:
 
 ## Heuristic-Based Hierarchical Clustering with Generative LLM extension (HHC-GM)
 
-[**HHC-GM**](./src/hhc_gm.py) first runs both classic HHC stages, uses cached
-SemCSE cluster embeddings to retain only plausible semantic neighbors, and then
-asks a local instruction-tuned generative model to judge those pairs. The
-ground-truth `label` is never sent to either model.
+[**HHC-GM**](./src/hhc_gm.py) extends HHC with a local generative model that
+judges whether unresolved clusters represent the same author:
 
-The default model is
-[`HuggingFaceTB/SmolLM2-1.7B-Instruct`](https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct).
+1. Run both classic HHC stages with their existing name, coauthor, title, and venue rules.
+2. Rank the remaining compatible-name cluster pairs using cosine similarity of
+   summed SemCSE paper embeddings. Retain up to `k` neighbors per cluster; a pair
+   qualifies if either cluster selects the other.
+3. Ask a local instruction-tuned LLM to compare the clusters' author names,
+   coauthors, titles, and venues. Merge only on a valid positive JSON decision
+   whose stated same-author probability meets the configured threshold.
+4. Recompute candidates after each merge, until no approved pair remains or the
+   per-group comparison budget is exhausted.
 
-```bash
-python src/hhc_gm.py data/lagosandv1_test.csv \
-  --limit 100 \
-  --device auto \
-  --no-progress
-```
-
-For each proposed pair, the model receives a bounded, label-free JSON summary
-containing author-name forms, paper identifiers, coauthors, titles, and venues.
-It also receives one likely-positive and one likely-negative live example when
-the input contains suitable examples. HHC-GM builds these without labels: hard
-positives have compatible names and a shared coauthor but weak semantic overlap;
-hard negatives have conflicting full names and no shared coauthor despite strong
-semantic overlap. For each target pair, it randomly chooses from the most
-embedding-similar examples using a reproducible seed.
-
-The model returns `same_author`, `same_author_probability`, and a short reason.
-A merge requires both compatible names and decision confidence at or above the
-configured threshold. If the model still returns malformed output after all
-retries, HHC-GM records the responses in its audit cache, conservatively leaves
-the clusters separate, and continues processing.
+Models run locally using the existing PyTorch and Transformers dependencies; missing model files download
+to `models`. No API key is required. The judge loads only on a decision-cache miss,
+and models are skipped entirely when classic HHC leaves no unresolved pairs.
 
 | Option | Default | Purpose |
 |---|---|---|
-| `--model` | `HuggingFaceTB/SmolLM2-1.7B-Instruct` | Hugging Face causal/instruction model. |
-| `--embedding-model` | `CLAUSE-Bielefeld/SemCSE_cosine` | Model used for semantic candidate retrieval. |
-| `--model-cache` | `models` | Directory for downloaded Hugging Face model files. |
-| `--device` | `auto` | Use CUDA when available, otherwise CPU. |
-| `--dtype` | `auto` | Use FP16 on CUDA; use the model default on CPU. |
-| `--attention-implementation` | `sdpa` | PyTorch scaled dot-product attention implementation. |
-| `--llm-confidence-threshold` | `0.90` | Minimum model confidence for a merge. |
-| `--semantic-candidate-threshold` | `0.55` | Minimum cluster embedding cosine for LLM review. |
-| `--semantic-top-k` | `5` | Semantic neighbors retained per cluster; `0` is unlimited. |
-| `--llm-candidate-min-score` | `0.0` | Optional additional classic title/venue filter. |
-| `--max-llm-comparisons-per-group` | `25` | Request budget for each ambiguous-name group; `0` is unlimited. |
-| `--few-shot-example-pool-size` | `512` | Maximum live hard-example bank size; `0` disables examples. |
-| `--few-shot-example-top-k` | `8` | Randomly select each example among the nearest semantic pairs. |
-| `--few-shot-example-seed` | `13` | Reproducible random example-selection seed. |
-| `--max-records-per-cluster` | `8` | Maximum papers from each cluster included in a prompt; automatically reduced when needed to fit. |
+| `--model` | `HuggingFaceTB/SmolLM2-1.7B-Instruct` | Local Hugging Face causal language model or model directory. |
+| `--model-cache` | `models` | Model download directory. |
+| `--device` | `auto` | CUDA when available, otherwise CPU. |
+| `--llm-confidence-threshold` | `0.90` | Minimum stated same-author probability for an additional merge. |
+| `--semantic-candidate-threshold` | `0.55` | Minimum embedding cosine for LLM review. |
+| `--semantic-top-k` | `5` | Neighbors retained per cluster; `0` is unlimited. |
+| `--max-llm-comparisons-per-group` | `25` | Pair-decision budget, including cache hits; `0` is unlimited. |
+| `--max-records-per-cluster` | `8` | Maximum publications shown per cluster, in input order. |
 | `--max-input-tokens` | `2048` | Maximum prompt length. |
 | `--max-new-tokens` | `128` | Maximum generated response length. |
-| `--embedding-batch-size` | `32` | SemCSE inference batch size. |
-| `--embedding-max-length` | `256` | Maximum semantic-document token count. |
-| `--embedding-cache` | `outputs/hhc_gm_semantic_embeddings.pt` | Cached embeddings and original computation time. |
-| `--generation-batch-size` | `4` | Cluster-pair prompts generated together; oversized CUDA batches split automatically. |
-| `--llm-retries` | `1` | Retries after malformed model output. |
-| `--llm-cache` | `outputs/hhc_gm_cache.jsonl` | Append-only decisions and audit information. |
+| `--llm-retries` | `1` | Additional attempts after an invalid response. |
+| `--llm-cache` | `outputs/hhc_gm_cache.jsonl` | Append-only validated decision cache. |
+| `--embedding-model` | `CLAUSE-Bielefeld/SemCSE_cosine` | Candidate retrieval encoder. |
+| `--embedding-cache` | `outputs/hhc_gm_semantic_embeddings.pt` | Paper embedding cache. |
+| `--embedding-batch-size` | `16` | Encoder batch size. |
+| `--embedding-max-length` | `256` | Encoder token limit. |
+| `--rebuild-embedding-cache` | Off | Recompute embeddings. |
+
+Labels are used only for evaluation, never for candidate selection, prompts, or
+decision cache keys. The focal author is excluded from displayed coauthors. All
+cross-cluster author-name forms must be compatible for an LLM merge. Semantic
+similarity alone never triggers an additional merge. Existing HHC merges are
+preserved, so the LLM stage cannot split an incorrect baseline cluster.
+
+Generation uses greedy decoding. Malformed or inconsistent responses are retried
+and then leave clusters separate. Prompts are shortened by reducing the number of
+displayed publications, keeping at least one from each cluster; pairs that still
+exceed the context budget remain separate. Such failures are counted in metrics
+and are not cached as negative author judgments. Cache keys include all cluster
+members' evidence, the model identifier, prompt version, and generation settings.
+Use a fresh cache path when changing model weights under the same identifier.
 
 ## Results reports
 
