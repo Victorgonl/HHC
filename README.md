@@ -151,8 +151,20 @@ judges whether unresolved clusters represent the same author:
    per-group comparison budget is exhausted.
 
 Models run locally using the existing PyTorch and Transformers dependencies; missing model files download
-to `models`. No API key is required. The judge loads only on a decision-cache miss,
-and models are skipped entirely when classic HHC leaves no unresolved pairs.
+to `models`. No API key is required. The judge loads only when a candidate pair
+needs review, and models are skipped entirely when classic HHC leaves no unresolved pairs.
+Each prompt sent to the model is written to `outputs/hhc_gm_prompts.json` with
+an ideal `label` derived from the input's ground truth:
+
+```json
+[
+  {"prompt": "Decide whether these two bibliographic clusters...", "label": true}
+]
+```
+
+`label` is `true` for a known same-author pair, `false` for known different
+authors, and `null` if the input lacks labels or either cluster already mixes
+ground-truth identities. The ideal label is never included in the model prompt.
 
 | Option | Default | Purpose |
 |---|---|---|
@@ -162,20 +174,18 @@ and models are skipped entirely when classic HHC leaves no unresolved pairs.
 | `--llm-confidence-threshold` | `0.90` | Minimum stated same-author probability for an additional merge. |
 | `--semantic-candidate-threshold` | `0.55` | Minimum embedding cosine for LLM review. |
 | `--semantic-top-k` | `5` | Neighbors retained per cluster; `0` is unlimited. |
-| `--max-llm-comparisons-per-group` | `25` | Pair-decision budget, including cache hits; `0` is unlimited. |
+| `--max-llm-comparisons-per-group` | `25` | Pair-decision budget; `0` is unlimited. |
 | `--max-records-per-cluster` | `8` | Maximum publications shown per cluster, in input order. |
 | `--max-input-tokens` | `2048` | Maximum prompt length. |
 | `--max-new-tokens` | `128` | Maximum generated response length. |
 | `--llm-retries` | `1` | Additional attempts after an invalid response. |
-| `--llm-cache` | `outputs/hhc_gm_cache.jsonl` | Append-only validated decision cache. |
+| `--prompts-output` | `outputs/hhc_gm_prompts.json` | JSON file containing each sent prompt and its ideal label. |
 | `--embedding-model` | `CLAUSE-Bielefeld/SemCSE_cosine` | Candidate retrieval encoder. |
-| `--embedding-cache` | `outputs/hhc_gm_semantic_embeddings.pt` | Paper embedding cache. |
 | `--embedding-batch-size` | `16` | Encoder batch size. |
 | `--embedding-max-length` | `256` | Encoder token limit. |
-| `--rebuild-embedding-cache` | Off | Recompute embeddings. |
 
-Labels are used only for evaluation, never for candidate selection, prompts, or
-decision cache keys. The focal author is excluded from displayed coauthors. All
+Labels are used only for evaluation and the prompt JSON's ideal answer, never for
+candidate selection or model prompts. The focal author is excluded from displayed coauthors. All
 cross-cluster author-name forms must be compatible for an LLM merge. Semantic
 similarity alone never triggers an additional merge. Existing HHC merges are
 preserved, so the LLM stage cannot split an incorrect baseline cluster.
@@ -184,9 +194,7 @@ Generation uses greedy decoding. Malformed or inconsistent responses are retried
 and then leave clusters separate. Prompts are shortened by reducing the number of
 displayed publications, keeping at least one from each cluster; pairs that still
 exceed the context budget remain separate. Such failures are counted in metrics
-and are not cached as negative author judgments. Cache keys include all cluster
-members' evidence, the model identifier, prompt version, and generation settings.
-Use a fresh cache path when changing model weights under the same identifier.
+and produce no prompt entry because nothing is sent to the model.
 
 ## Results reports
 

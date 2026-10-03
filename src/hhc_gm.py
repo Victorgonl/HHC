@@ -8,11 +8,10 @@ from __future__ import annotations
 
 import argparse
 import ast
-import hashlib
 import json
 import time
 from collections import defaultdict
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -28,7 +27,6 @@ except ImportError:  # Supports python src/hhc_gm.py.
 
 
 DEFAULT_MODEL = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
-PROMPT_VERSION = "hhc-gm-1"
 
 
 @dataclass(frozen=True)
@@ -102,11 +100,28 @@ def build_prompt(left: list[dict], right: list[dict], max_records: int) -> str:
 class PairJudge(Protocol):
     def compare(
         self, left: hhc.Cluster, right: hhc.Cluster, rows: list[dict[str, str]]
-    ) -> tuple[Decision, bool]: ...
+    ) -> Decision: ...
+
+
+def ideal_label(
+    left: hhc.Cluster, right: hhc.Cluster, rows: list[dict[str, str]]
+) -> bool | None:
+    """Return the known same-author answer, or None for ambiguous truth."""
+    left_labels = {
+        rows[record.index].get("label", "").strip() for record in left.records
+    }
+    right_labels = {
+        rows[record.index].get("label", "").strip() for record in right.records
+    }
+    if "" in left_labels or "" in right_labels:
+        return None
+    if len(left_labels) != 1 or len(right_labels) != 1:
+        return None
+    return left_labels == right_labels
 
 
 class LocalJudge:
-    """Lazy, greedy local inference with content-addressed JSONL decisions."""
+    """Lazy, greedy local inference that records every prompt sent to the model."""
 
     def __init__(self, args: argparse.Namespace, device: str):
         self.args = args
@@ -117,25 +132,19 @@ class LocalJudge:
         self.model_calls = 0
         self.invalid_responses = 0
         self.oversized_prompts = 0
-        self.cache: dict[str, Decision] = {}
-        if args.llm_cache.exists():
-            with args.llm_cache.open(encoding="utf-8") as handle:
-                for number, line in enumerate(handle, 1):
-                    if not line.strip():
-                        continue
-                    try:
-                        entry = json.loads(line)
-                        # Other prompt versions may share this append-only file.
-                        if entry.get("prompt_version") != PROMPT_VERSION:
-                            continue
-                        key = entry["cache_key"]
-                        if not isinstance(key, str):
-                            raise ValueError("cache_key must be a string")
-                        self.cache[key] = parse_decision(json.dumps(entry["decision"]))
-                    except (ValueError, KeyError, TypeError, AttributeError) as exc:
-                        raise ValueError(
-                            f"Invalid LLM cache {args.llm_cache}, line {number}"
-                        ) from exc
+        self.prompts_recorded = 0
+        self.args.prompts_output.parent.mkdir(parents=True, exist_ok=True)
+        self.args.prompts_output.write_bytes(b"[\n]\n")
+
+    def _record_prompt(self, prompt: str, label: bool | None) -> None:
+        entry = json.dumps({"prompt": prompt, "label": label}, ensure_ascii=False)
+        prefix = "  " if self.prompts_recorded == 0 else ",\n  "
+        # Replace the closing bracket in place. The file remains valid JSON
+        # after every recorded prompt without rewriting all earlier entries.
+        with self.args.prompts_output.open("r+b") as handle:
+            handle.seek(-2, 2)
+            handle.write((prefix + entry + "\n]\n").encode("utf-8"))
+        self.prompts_recorded += 1
 
     def _load(self) -> None:
         if self.model is not None:
@@ -165,24 +174,8 @@ class LocalJudge:
             return self.tokenizer(prompt, return_tensors="pt", add_special_tokens=False)
         return self.tokenizer(prompt, return_tensors="pt")
 
-    def compare(self, left, right, rows) -> tuple[Decision, bool]:
+    def compare(self, left, right, rows) -> Decision:
         a, b = cluster_data(left, rows), cluster_data(right, rows)
-        # Include ALL members, even those omitted from the bounded prompt, so a
-        # changed cluster can never reuse a decision about its previous contents.
-        material = {
-            "version": PROMPT_VERSION,
-            "model": self.args.model,
-            "device": self.device,
-            "max_records": self.args.max_records_per_cluster,
-            "max_input_tokens": self.args.max_input_tokens,
-            "max_new_tokens": self.args.max_new_tokens,
-            "retries": self.args.llm_retries,
-            "left": a,
-            "right": b,
-        }
-        key = hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()
-        if key in self.cache:
-            return self.cache[key], True
         self._load()
         context_limit = getattr(self.model.config, "max_position_embeddings", None)
         token_limit = self.args.max_input_tokens
@@ -200,13 +193,12 @@ class LocalJudge:
                 break
         if prompt is None:
             self.oversized_prompts += 1
-            return Decision(
-                False, 0.0, "Insufficient context space for both clusters."
-            ), False
+            return Decision(False, 0.0, "Insufficient context space for both clusters.")
+        label = ideal_label(left, right, rows)
         for attempt in range(self.args.llm_retries + 1):
-            tokens = self._tokens(prompt + (retry_note if attempt else "")).to(
-                self.device
-            )
+            sent_prompt = prompt + (retry_note if attempt else "")
+            tokens = self._tokens(sent_prompt).to(self.device)
+            self._record_prompt(sent_prompt, label)
             self.model_calls += 1
             with torch.inference_mode():
                 generated = self.model.generate(
@@ -227,27 +219,8 @@ class LocalJudge:
             except ValueError:
                 self.invalid_responses += 1
                 continue
-            self.args.llm_cache.parent.mkdir(parents=True, exist_ok=True)
-            with self.args.llm_cache.open("a", encoding="utf-8") as handle:
-                handle.write(
-                    json.dumps(
-                        {
-                            "cache_key": key,
-                            "prompt_version": PROMPT_VERSION,
-                            "model": self.args.model,
-                            "decision": asdict(decision),
-                        },
-                        ensure_ascii=False,
-                        sort_keys=True,
-                    )
-                    + "\n"
-                )
-            self.cache[key] = decision
-            return decision, False
-        # Failures are not persisted as substantive negative author judgments.
-        return Decision(
-            False, 0.0, "Invalid model response; clusters left separate."
-        ), False
+            return decision
+        return Decision(False, 0.0, "Invalid model response; clusters left separate.")
 
 
 def compatible_clusters(left: hhc.Cluster, right: hhc.Cluster) -> bool:
@@ -299,7 +272,7 @@ def generative_step(
     max_comparisons=25,
 ):
     """Recompute candidates after each merge; never apply stale pair decisions."""
-    stats = {"llm_comparisons": 0, "llm_cache_hits": 0, "llm_merges": 0}
+    stats = {"llm_comparisons": 0, "llm_merges": 0}
     reviewed = set()
     while not max_comparisons or stats["llm_comparisons"] < max_comparisons:
         merged = False
@@ -316,9 +289,8 @@ def generative_step(
             if identity in reviewed:
                 continue
             reviewed.add(identity)
-            decision, cache_hit = judge.compare(left, right, rows)
+            decision = judge.compare(left, right, rows)
             stats["llm_comparisons"] += 1
-            stats["llm_cache_hits"] += int(cache_hit)
             if (
                 decision.same_author
                 and decision.same_author_probability >= confidence_threshold
@@ -351,23 +323,23 @@ def run(args: argparse.Namespace) -> dict:
     device = hhc_se.resolve_device(args.device)
     judge = LocalJudge(args, device)
     embeddings = None
-    cache_hit, embedding_seconds, embedding_setup = False, 0.0, 0.0
+    embedding_seconds, embedding_setup = 0.0, 0.0
     if any(len(clusters) > 1 for clusters in groups.values()):
-        embeddings, cache_hit, embedding_seconds, embedding_setup = hhc_se.encode_rows(
+        embeddings, _, embedding_seconds, embedding_setup = hhc_se.encode_rows(
             rows,
             args.embedding_model,
             args.model_cache,
             args.embedding_batch_size,
             args.embedding_max_length,
             device,
-            args.embedding_cache,
-            args.rebuild_embedding_cache,
+            None,
+            False,
             args.no_progress,
         )
         if device == "cuda":
             torch.cuda.empty_cache()
     predictions = [""] * len(rows)
-    totals = {"llm_comparisons": 0, "llm_cache_hits": 0, "llm_merges": 0}
+    totals = {"llm_comparisons": 0, "llm_merges": 0}
     for name, clusters in tqdm(groups.items(), desc="HHC-GM", disable=args.no_progress):
         if len(clusters) > 1:
             clusters, stats = generative_step(
@@ -388,7 +360,6 @@ def run(args: argparse.Namespace) -> dict:
     hhc_se.write_predictions(args.output, rows, predictions)
     summary = {
         "method": "HHC-GM",
-        "prompt_version": PROMPT_VERSION,
         **{
             key: str(value) if isinstance(value, Path) else value
             for key, value in vars(args).items()
@@ -399,9 +370,9 @@ def run(args: argparse.Namespace) -> dict:
         "predicted_clusters": len(set(predictions)),
         **totals,
         "llm_model_calls": judge.model_calls,
+        "prompts_recorded": judge.prompts_recorded,
         "llm_invalid_responses": judge.invalid_responses,
         "llm_oversized_prompts": judge.oversized_prompts,
-        "embedding_cache_hit": cache_hit,
         "embedding_seconds": round(embedding_seconds, 3),
         "model_setup_seconds_excluded": round(embedding_setup + judge.setup_seconds, 3),
     }
@@ -409,9 +380,7 @@ def run(args: argparse.Namespace) -> dict:
         summary.update(hhc.evaluate(rows, predictions))
     elapsed = time.perf_counter() - started - embedding_setup - judge.setup_seconds
     summary["current_run_seconds"] = round(elapsed, 3)
-    summary["runtime_seconds"] = round(
-        elapsed + (embedding_seconds if cache_hit else 0), 3
-    )
+    summary["runtime_seconds"] = round(elapsed, 3)
     args.metrics_output.parent.mkdir(parents=True, exist_ok=True)
     args.metrics_output.write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -446,17 +415,14 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--max-new-tokens", type=int, default=128)
     parser.add_argument("--llm-retries", type=int, default=1)
     parser.add_argument(
-        "--llm-cache", type=Path, default=Path("outputs/hhc_gm_cache.jsonl")
+        "--prompts-output",
+        type=Path,
+        default=Path("outputs/hhc_gm_prompts.json"),
+        help="JSON array of prompts sent to the model and ideal labels",
     )
     parser.add_argument("--embedding-model", default=hhc_se.DEFAULT_MODEL)
     parser.add_argument("--embedding-batch-size", type=int, default=16)
     parser.add_argument("--embedding-max-length", type=int, default=256)
-    parser.add_argument(
-        "--embedding-cache",
-        type=Path,
-        default=Path("outputs/hhc_gm_semantic_embeddings.pt"),
-    )
-    parser.add_argument("--rebuild-embedding-cache", action="store_true")
     parser.add_argument("--limit", type=int)
     parser.add_argument("--no-progress", action="store_true")
     args = parser.parse_args(argv)
