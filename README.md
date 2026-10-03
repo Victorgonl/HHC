@@ -35,7 +35,7 @@ The input must be a UTF-8 CSV file with these columns:
 | `coauthors` | List of author names. |
 | `title` | Publication title. |
 | `venue` | Journal or conference name. It may be empty. |
-| `label` | Ground-truth author identity used only for evaluation. |
+| `label` | Ground-truth author identity used for evaluation and HHC-GM's ideal prompt labels. |
 
 ## Dataset
 
@@ -62,7 +62,7 @@ hhc.py        input
               [--metrics-output METRICS_OUTPUT]
               [--title-threshold TITLE_THRESHOLD]
               [--venue-threshold VENUE_THRESHOLD]
-              [--limit LIMIT]
+              [--n-ambiguous-group N] [--seed SEED]
               [--no-progress]
 ```
 
@@ -73,7 +73,8 @@ hhc.py        input
 | `--metrics-output` | `outputs/hhc_metrics.json` | Evaluation-summary JSON path. |
 | `--title-threshold` | `0.30` | Minimum title cosine similarity for merging. |
 | `--venue-threshold` | `0.50` | Minimum venue cosine similarity for merging. |
-| `--limit N` | All records | Process only the first `N` records. |
+| `--n-ambiguous-group N` | All groups | Randomly select `N` complete ambiguous-name groups. |
+| `--seed SEED` | `42` | Reproduce the same group selection. |
 | `--no-progress` | Off | Disable `tqdm` progress bars. |
 
 Thresholds must be between 0 and 1.

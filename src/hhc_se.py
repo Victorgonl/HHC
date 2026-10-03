@@ -230,7 +230,7 @@ def write_predictions(
 
 def run(args: argparse.Namespace) -> dict[str, float | int | str | bool]:
     started_at = time.perf_counter()
-    rows = hhc.read_rows(args.input, args.limit)
+    rows = hhc.read_rows(args.input, args.n_ambiguous_group, args.seed)
     device = resolve_device(args.device)
 
     embeddings, cache_hit, embedding_seconds, model_setup_seconds = encode_rows(
@@ -282,6 +282,8 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str | bool]:
         "input": str(args.input),
         "output": str(args.output),
         "ambiguous_groups": len(groups),
+        "n_ambiguous_group": args.n_ambiguous_group,
+        "seed": args.seed,
         "title_threshold": args.title_threshold,
         "venue_threshold": args.venue_threshold,
         "semantic_threshold": args.semantic_threshold,
@@ -337,9 +339,10 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         default=Path("outputs/semcse_cosine_embeddings.pt"),
     )
     parser.add_argument("--rebuild-cache", action="store_true")
-    parser.add_argument("--limit", type=int)
+    hhc.add_group_selection_args(parser)
     parser.add_argument("--no-progress", action="store_true")
     args = parser.parse_args(argv)
+    hhc.validate_group_selection_args(parser, args)
     if not -1 <= args.semantic_threshold <= 1:
         parser.error("--semantic-threshold must be between -1 and 1")
     for name in ("title_threshold", "venue_threshold"):

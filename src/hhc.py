@@ -3,6 +3,7 @@ import ast
 import csv
 import json
 import math
+import random
 import re
 import time
 import unicodedata
@@ -349,7 +350,10 @@ def evaluate(
     }
 
 
-def read_rows(path: Path, limit: int | None = None) -> list[dict[str, str]]:
+def read_rows(
+    path: Path, n_ambiguous_group: int | None = None, seed: int = 42
+) -> list[dict[str, str]]:
+    """Read complete blocks, sampling group names reproducibly when requested."""
     required = {
         "ambiguous_name",
         "paper_id",
@@ -363,17 +367,42 @@ def read_rows(path: Path, limit: int | None = None) -> list[dict[str, str]]:
         missing = required - set(reader.fieldnames or ())
         if missing:
             raise ValueError(f"missing required columns: {', '.join(sorted(missing))}")
-        rows = []
-        for row in reader:
-            rows.append(row)
-            if limit is not None and len(rows) >= limit:
-                break
+        rows = list(reader)
+    if n_ambiguous_group is not None:
+        if n_ambiguous_group < 1:
+            raise ValueError("--n-ambiguous-group must be positive")
+        group_names = sorted({row["ambiguous_name"] for row in rows})
+        if n_ambiguous_group > len(group_names):
+            raise ValueError(
+                f"requested {n_ambiguous_group} ambiguous groups, "
+                f"but the input contains only {len(group_names)}"
+            )
+        selected = set(random.Random(seed).sample(group_names, n_ambiguous_group))
+        rows = [row for row in rows if row["ambiguous_name"] in selected]
     return rows
+
+
+def add_group_selection_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--n-ambiguous-group", type=int,
+        help="sample this many complete ambiguous-name groups (default: all)",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=42,
+        help="random seed for ambiguous-group selection (default: 42)",
+    )
+
+
+def validate_group_selection_args(
+    parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> None:
+    if args.n_ambiguous_group is not None and args.n_ambiguous_group < 1:
+        parser.error("--n-ambiguous-group must be positive")
 
 
 def run(args: argparse.Namespace) -> dict[str, float | int | str]:
     started_at = time.perf_counter()
-    rows = read_rows(args.input, args.limit)
+    rows = read_rows(args.input, args.n_ambiguous_group, args.seed)
     groups: dict[str, list[Record]] = defaultdict(list)
     for index, row in enumerate(
         tqdm(rows, desc="Preparing records", unit="record", disable=args.no_progress)
@@ -414,6 +443,8 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
         "input": str(args.input),
         "output": str(args.output),
         "ambiguous_groups": len(groups),
+        "n_ambiguous_group": args.n_ambiguous_group,
+        "seed": args.seed,
         "title_threshold": args.title_threshold,
         "venue_threshold": args.venue_threshold,
     }
@@ -441,13 +472,12 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--title-threshold", type=float, default=0.30)
     parser.add_argument("--venue-threshold", type=float, default=0.50)
-    parser.add_argument(
-        "--limit", type=int, help="process only the first N records (smoke tests)"
-    )
+    add_group_selection_args(parser)
     parser.add_argument(
         "--no-progress", action="store_true", help="disable tqdm progress bars"
     )
     args = parser.parse_args(argv)
+    validate_group_selection_args(parser, args)
     for name in ("title_threshold", "venue_threshold"):
         value = getattr(args, name)
         if not 0 <= value <= 1:

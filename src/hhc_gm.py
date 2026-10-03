@@ -309,7 +309,7 @@ def generative_step(
 
 def run(args: argparse.Namespace) -> dict:
     started = time.perf_counter()
-    rows = hhc.read_rows(args.input, args.limit)
+    rows = hhc.read_rows(args.input, args.n_ambiguous_group, args.seed)
     groups = defaultdict(list)
     for index, row in enumerate(rows):
         record = hhc.make_record(index, row)
@@ -423,9 +423,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--embedding-model", default=hhc_se.DEFAULT_MODEL)
     parser.add_argument("--embedding-batch-size", type=int, default=16)
     parser.add_argument("--embedding-max-length", type=int, default=256)
-    parser.add_argument("--limit", type=int)
+    hhc.add_group_selection_args(parser)
     parser.add_argument("--no-progress", action="store_true")
     args = parser.parse_args(argv)
+    hhc.validate_group_selection_args(parser, args)
     for name in ("title_threshold", "venue_threshold", "llm_confidence_threshold"):
         if not 0 <= getattr(args, name) <= 1:
             parser.error(f"--{name.replace('_', '-')} must be between 0 and 1")
@@ -440,7 +441,6 @@ def parse_args(argv=None) -> argparse.Namespace:
         "max_new_tokens",
         "embedding_batch_size",
         "embedding_max_length",
-        "limit",
     ):
         if getattr(args, name) is not None and getattr(args, name) < 1:
             parser.error(f"--{name.replace('_', '-')} must be positive")
