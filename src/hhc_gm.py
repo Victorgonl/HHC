@@ -419,7 +419,27 @@ class LocalTransformersJudge:
         entry["right_paper_ids"] = sorted(
             rows[record.index]["paper_id"] for record in right.records
         )
+        self._add_label_evaluation(entry, decision, left, right, rows)
         return entry
+
+    @staticmethod
+    def _add_label_evaluation(
+        entry: dict[str, Any],
+        decision: LLMDecision,
+        left: hhc.Cluster,
+        right: hhc.Cluster,
+        rows: list[dict[str, str]],
+    ) -> None:
+        """Add label-based diagnostics after inference, never to the prompt."""
+        ground_truth = labeled_merge_is_correct(left, right, rows)
+        if ground_truth is None:
+            return
+        entry["ground_truth_same_author"] = ground_truth
+        entry["llm_correct"] = (
+            False
+            if entry.get("parse_failure")
+            else decision.same_author == ground_truth
+        )
 
     def compare_many(
         self,
@@ -436,7 +456,20 @@ class LocalTransformersJudge:
                 cached = self.cache.get(self._legacy_cache_key(left, right, rows))
             if isinstance(cached, dict):
                 try:
-                    results[index] = (parse_decision(json.dumps(cached)), True)
+                    decision = parse_decision(json.dumps(cached))
+                    previous = {
+                        name: value
+                        for name, value in cached.items()
+                        if name != "cache_key"
+                    }
+                    enriched = previous.copy()
+                    self._add_label_evaluation(
+                        enriched, decision, left, right, rows
+                    )
+                    if enriched != previous:
+                        self.cache[key] = enriched
+                        self._save_cache(key, enriched)
+                    results[index] = (decision, True)
                     continue
                 except ValueError:
                     pass
@@ -492,6 +525,9 @@ class LocalTransformersJudge:
             cache_entry = self._cache_entry(decision, item["left"], item["right"], rows)
             cache_entry["parse_failure"] = True
             cache_entry["invalid_responses"] = item["invalid_responses"]
+            self._add_label_evaluation(
+                cache_entry, decision, item["left"], item["right"], rows
+            )
             self.cache[item["key"]] = cache_entry
             self._save_cache(item["key"], cache_entry)
             results[item["index"]] = (decision, False)
