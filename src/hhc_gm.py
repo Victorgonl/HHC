@@ -28,7 +28,7 @@ except ImportError:  # Supports ``python src/hhc_gm.py``.
 
 
 DEFAULT_MODEL = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
-PROMPT_VERSION = "hhc-gm-v2"
+PROMPT_VERSION = "hhc-gm-v3"
 RETRY_INSTRUCTION = (
     "\n\nYour previous response was invalid. Return only the requested JSON object "
     "with a boolean same_author and numeric confidence."
@@ -171,13 +171,13 @@ Cluster B:
 
 Return exactly one valid JSON object and no other text:
 
-{{"same_author": true, "confidence": 0.95, "reason": "brief evidence-based reason"}}
+{{"same_author": true, "confidence": 0.95, "reason": "brief summary of the main supporting and contradicting evidence"}}
 
 Requirements:
 
 - "same_author": JSON boolean.
 - "confidence": number from 0.0 to 1.0.
-- "reason": concise explanation of the strongest evidence and important uncertainty or contradiction.
+- "reason": concise summary of the main evidence for the decision, including the strongest supporting signals and any important contradictions or uncertainty.
 - Do not invent missing information.
 - Do not add keys, markdown, or extra text."""
 
