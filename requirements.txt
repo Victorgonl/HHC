@@ -7,7 +7,7 @@ tqdm
 torch
 numpy
 sentencepiece
-transformers
+transformers>=4.56
 
 # reports
 pandas

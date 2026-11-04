@@ -202,3 +202,80 @@ and produce no prompt entry because nothing is sent to the model.
 Table bellow is generated using the [reports notebook](./notebooks/reports.ipynb).
 
 ![alt text](./reports/reports_table.png)
+
+### GM evidence, caching, and diagnostics
+
+GM selects publications using shared collaborators, cross-cluster title terms,
+then vocabulary coverage, rather than taking the first records in input order.
+All coauthors and titles used for this selection are label-free. A positive LLM
+judgment is still required for every additional merge.
+
+Additional options:
+
+| Option | Default | Purpose |
+|---|---|---|
+| `--decision-cache` | `outputs/hhc_gm_decisions_cache.jsonl` | Persistent valid decisions; reused before loading the judge. |
+| `--decisions-output` | `outputs/hhc_gm_decisions.jsonl` | Raw responses, decisions, ground truth for auditing, cache status, and latency. |
+| `--embedding-cache` | `outputs/semcse_cosine_embeddings.pt` | Reuses the HHC-SE embedding cache when its data/model fingerprint matches. |
+| `--rebuild-cache` | off | Ignore saved decisions and rebuild embeddings. |
+| `--retrieval-diagnostics` | off | Audit same-author candidate coverage through name filtering, semantic filtering, top-k and initial budget. |
+| `--model-revision` | `main` | Model revision; use a commit hash for reproducible experiments. |
+| `--cpu-int8` | off | Optional dynamic int8 quantization of CPU linear layers. |
+| `--cpu-threads` | `4` | CPU thread count; `0` preserves the PyTorch default. |
+
+Decision cache keys include the prompt version, model/revision, inference
+settings, device, and both clusters' publication contents. Labels and merge
+thresholds are excluded, so a validation sweep can reuse judgments without
+leaking ground truth into inference. Invalid responses and context failures are
+not cached. Use a distinct cache or `--rebuild-cache` after updating a model
+behind a mutable revision such as `main`. Quantized CPU and GPU results may differ.
+
+Metrics now include judgment confusion counts, Brier score, and confidence bins
+for valid labeled comparisons. These audit the reviewed pairs, whose distribution
+changes after merges; they are not independent estimates of overall accuracy.
+Retrieval diagnostics count initially available pure same-author cluster pairs;
+after merges the candidate set and comparison budget coverage can change.
+`current_run_seconds` and `runtime_seconds` report actual current execution time
+excluding model setup. Cache hits and inference time are reported separately;
+do not compare a cached run's time against an uncached run as a model speedup.
+
+### Alternative judge and experiment configuration
+
+`Qwen/Qwen3-1.7B` is included as an alternative to SmolLM2. Its chat template is
+called with `enable_thinking=False`, keeping the output budget for the JSON
+answer. This is a model to benchmark, not a claim of superior accuracy on this
+dataset. The model's official instructions are at
+<https://huggingface.co/Qwen/Qwen3-1.7B>.
+
+```bash
+python src/hhc_gm.py data/lagosandv1_test.csv \
+  --n-ambiguous-group 50 --seed 1 --model Qwen/Qwen3-1.7B \
+  --device auto --retrieval-diagnostics
+```
+
+Experiments can run locally or in a hosted notebook environment with the project
+dependencies installed and access to the input data. Use the same input groups,
+seed, and retrieval settings when comparing judges, and specify separate output
+paths for each run. GM's automatic device selection uses CUDA when available
+with at least 6 GB of GPU memory, otherwise CPU. An explicit `--device cuda`
+overrides this fallback. Optional `--cpu-int8` quantization applies only to CPU
+inference.
+
+### Validation without tuning on the test set
+
+Use a **separate labeled validation CSV**, with ambiguous-name groups disjoint
+from the final test set. The sweep reruns clustering for every configuration,
+including merges that change later candidate pairs, and reuses cached judgments.
+It saves all trial metrics and selects the best validation pairwise F1 satisfying
+the configured precision floor. If no trial qualifies, selection is null.
+
+```bash
+python -m src.tune_hhc_gm data/validation.csv \
+  --model Qwen/Qwen3-1.7B --device auto \
+  --confidence-grid 0.7 0.8 0.9 --semantic-grid 0.4 0.55 \
+  --top-k-grid 5 10 --minimum-precision 0.98
+```
+
+Freeze the selected settings before the final test run. The repository currently
+contains a test dataset only; no thresholds are selected or models fine-tuned on
+that test data.
