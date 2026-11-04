@@ -15,6 +15,11 @@ from pathlib import Path
 import snowballstemmer
 from tqdm import tqdm
 
+try:
+    from src.experiment_metadata import write_experiment_metadata
+except ImportError:
+    from experiment_metadata import write_experiment_metadata
+
 TOKEN_RE = re.compile(r"[a-z0-9]+")
 STOP_WORDS = {
     "a",
@@ -451,6 +456,7 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
     if rows and "label" in rows[0]:
         summary.update(evaluate(rows, predictions))
     summary["runtime_seconds"] = round(time.perf_counter() - started_at, 3)
+    write_experiment_metadata(args, "HHC", resolved_device="cpu")
     args.metrics_output.parent.mkdir(parents=True, exist_ok=True)
     args.metrics_output.write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"

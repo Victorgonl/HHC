@@ -585,6 +585,7 @@ def run(args: argparse.Namespace) -> dict:
     elapsed = time.perf_counter() - started - embedding_setup - judge.setup_seconds
     summary["current_run_seconds"] = round(elapsed, 3)
     summary["runtime_seconds"] = round(elapsed, 3)
+    hhc.write_experiment_metadata(args, "HHC-GM", resolved_device=device)
     args.metrics_output.parent.mkdir(parents=True, exist_ok=True)
     args.metrics_output.write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"

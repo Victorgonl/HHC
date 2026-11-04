@@ -299,6 +299,7 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str | bool]:
     summary["runtime_seconds"] = round(
         current_run_seconds + (embedding_seconds if cache_hit else 0.0), 3
     )
+    hhc.write_experiment_metadata(args, "HHC-SE", resolved_device=device)
     args.metrics_output.parent.mkdir(parents=True, exist_ok=True)
     args.metrics_output.write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
