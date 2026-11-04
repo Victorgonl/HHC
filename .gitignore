@@ -4,3 +4,6 @@
 # Language models
 models/*
 !models/README.md
+
+# Local tests
+tests/*

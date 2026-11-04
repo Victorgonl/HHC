@@ -169,7 +169,7 @@ ground-truth identities. The ideal label is never included in the model prompt.
 
 | Option | Default | Purpose |
 |---|---|---|
-| `--model` | `HuggingFaceTB/SmolLM2-1.7B-Instruct` | Local Hugging Face causal language model or model directory. |
+| `--model` | `Qwen/Qwen3-1.7B` | Local Hugging Face causal language model or model directory. |
 | `--model-cache` | `models` | Model download directory. |
 | `--device` | `auto` | CUDA when available, otherwise CPU. |
 | `--llm-confidence-threshold` | `0.90` | Minimum stated same-author probability for an additional merge. |
@@ -210,6 +210,14 @@ then vocabulary coverage, rather than taking the first records in input order.
 All coauthors and titles used for this selection are label-free. A positive LLM
 judgment is still required for every additional merge.
 
+Prompts list the focal author's name variants separately from publication
+collaborators and provide label-free name compatibility and full-name evidence.
+The judge compares specific research connections and treats changes in
+collaborators, venues, and publication counts as neutral evidence. Fixed example
+answers are omitted to avoid encouraging copied decisions. Changes to this
+prompt update its fingerprint, so older decisions are not reused. Accuracy
+improvements must still be measured on held-out data.
+
 Additional options:
 
 | Option | Default | Purpose |
@@ -239,12 +247,14 @@ after merges the candidate set and comparison budget coverage can change.
 excluding model setup. Cache hits and inference time are reported separately;
 do not compare a cached run's time against an uncached run as a model speedup.
 
-### Alternative judge and experiment configuration
+### Judge selection and experiment configuration
 
-`Qwen/Qwen3-1.7B` is included as an alternative to SmolLM2. Its chat template is
-called with `enable_thinking=False`, keeping the output budget for the JSON
-answer. This is a model to benchmark, not a claim of superior accuracy on this
-dataset. The model's official instructions are at
+`Qwen/Qwen3-1.7B` is the default judge. Its chat template is called with
+`enable_thinking=False`, keeping the output budget for the JSON answer. The
+previous judge remains available through
+`--model HuggingFaceTB/SmolLM2-1.7B-Instruct`. This default change follows targeted
+synthetic checks of the collaborator-confusion failure; it does not establish
+superior clustering accuracy on the full dataset. The model's official instructions are at
 <https://huggingface.co/Qwen/Qwen3-1.7B>.
 
 ```bash
