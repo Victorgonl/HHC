@@ -447,7 +447,7 @@ def generative_step(
     embeddings,
     judge: PairJudge,
     *,
-    confidence_threshold=0.9,
+    confidence_threshold=0.7,
     semantic_threshold=0.55,
     top_k=5,
     max_comparisons=25,
@@ -620,7 +620,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--title-threshold", type=float, default=0.30)
     parser.add_argument("--venue-threshold", type=float, default=0.50)
-    parser.add_argument("--llm-confidence-threshold", type=float, default=0.90)
+    parser.add_argument("--llm-confidence-threshold", type=float, default=0.70)
     parser.add_argument("--semantic-candidate-threshold", type=float, default=0.55)
     parser.add_argument("--candidate-score", choices=("centroid", "hybrid"),
                         default="centroid", help="Hybrid also retrieves by best paper pair")
