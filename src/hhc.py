@@ -389,11 +389,14 @@ def read_rows(
 
 def add_group_selection_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "--n-ambiguous-group", type=int,
+        "--n-ambiguous-group",
+        type=int,
         help="sample this many complete ambiguous-name groups (default: all)",
     )
     parser.add_argument(
-        "--seed", type=int, default=42,
+        "--seed",
+        type=int,
+        default=42,
         help="random seed for ambiguous-group selection (default: 42)",
     )
 

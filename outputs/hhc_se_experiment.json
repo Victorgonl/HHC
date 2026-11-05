@@ -1,0 +1,61 @@
+{
+  "environment": {
+    "active_cuda_device": 0,
+    "active_cuda_device_name": "Tesla T4",
+    "architecture": "x86_64",
+    "cpu": {
+      "cores_per_socket": 1,
+      "logical_processors": 2,
+      "model": "Intel(R) Xeon(R) CPU @ 2.00GHz",
+      "sockets": 1,
+      "threads_per_core": 2
+    },
+    "gpu": {
+      "driver_supported_cuda_version": "13.0",
+      "driver_version": "580.82.07",
+      "memory_mib": 15360,
+      "model": "Tesla T4"
+    },
+    "gpus": [
+      {
+        "driver_supported_cuda_version": "13.0",
+        "driver_version": "580.82.07",
+        "memory_mib": 15360,
+        "model": "Tesla T4"
+      }
+    ],
+    "operating_system": "Linux-6.6.159+-x86_64-with-glibc2.39",
+    "python_version": "3.13.16",
+    "pytorch_cpu_threads": 1,
+    "pytorch_cuda_version": "13.0",
+    "pytorch_version": "2.11.0+cu130",
+    "source": "Automatically collected on the experiment machine",
+    "system_memory_mib": 12976,
+    "virtualization": "KVM"
+  },
+  "method": "HHC-SE",
+  "parameters": {
+    "batch_size": 16,
+    "device": "auto",
+    "embedding_cache": "outputs/semcse_cosine_embeddings.pt",
+    "input": "data/lagosandv1_test.csv",
+    "max_length": 256,
+    "metrics_output": "outputs/hhc_se_metrics.json",
+    "model": "CLAUSE-Bielefeld/SemCSE_cosine",
+    "model_cache": "models",
+    "n_ambiguous_group": 1000,
+    "no_progress": false,
+    "output": "outputs/hhc_se_predictions.csv",
+    "rebuild_cache": false,
+    "seed": 1,
+    "semantic_threshold": 0.8,
+    "title_threshold": 0.3,
+    "venue_threshold": 0.5
+  },
+  "recorded_at_utc": "2026-11-05T03:07:42.007020+00:00",
+  "resolved": {
+    "device": "cuda"
+  },
+  "schema_version": 1,
+  "source": "Captured at experiment completion"
+}

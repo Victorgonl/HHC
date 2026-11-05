@@ -22,6 +22,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.figure import Figure
+from matplotlib.ticker import LogFormatterMathtext
 
 try:
     from src.hhc import evaluate
@@ -71,7 +72,7 @@ class PlotStyle:
     marker_size: float = 6
     grid_width: float = 0.5
 
-    export_pdf: bool = True
+    export_pdf: bool = False
     transparent_background: bool = True
 
     def rc_params(self) -> dict:
@@ -133,10 +134,29 @@ def load_report_data(output_dir: str | Path) -> ReportData:
         if metadata_file.exists():
             metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
             if metadata.get("method") != method:
-                raise ValueError(f"{method}: experiment metadata names a different method")
+                raise ValueError(
+                    f"{method}: experiment metadata names a different method"
+                )
             for key, value in metadata.get("parameters", {}).items():
-                if key != "device" and key in run_summaries[method] and value != run_summaries[method][key]:
-                    raise ValueError(f"{method}: experiment parameter {key!r} conflicts with its metrics")
+                if method == "HHC-GM" and key == "retrieval_diagnostics":
+                    # Older metrics overwrite the boolean argument with results.
+                    summary_key = "retrieval_diagnostics_enabled"
+                    if summary_key in run_summaries[method]:
+                        if value != run_summaries[method][summary_key]:
+                            raise ValueError(
+                                f"{method}: experiment parameter {key!r} conflicts with its metrics"
+                            )
+                        continue
+                    if isinstance(run_summaries[method].get(key), dict):
+                        continue
+                if (
+                    key != "device"
+                    and key in run_summaries[method]
+                    and value != run_summaries[method][key]
+                ):
+                    raise ValueError(
+                        f"{method}: experiment parameter {key!r} conflicts with its metrics"
+                    )
             experiment_metadata[method] = metadata
         frame = pd.read_csv(output_dir / f"{stem}_predictions.csv", dtype=str)
         required = set(key_columns + ["predicted_cluster"])
@@ -171,7 +191,9 @@ def load_report_data(output_dir: str | Path) -> ReportData:
     scores = {
         m: evaluate(rows, common[prediction_columns[m]].tolist()) for m in METHODS
     }
-    return ReportData(common, scores, run_summaries, experiment_metadata=experiment_metadata)
+    return ReportData(
+        common, scores, run_summaries, experiment_metadata=experiment_metadata
+    )
 
 
 def _source_records(
@@ -523,14 +545,21 @@ def plot_error_changes(
                     )
                 axis.set_xticks(positions, changes.index)
                 axis.set_title(title, fontsize=style.font_size)
-                axis.set_ylim(0, max(1, changes[[f"{error} corrected", f"{error} introduced"]].to_numpy().max()) * 1.25)
+                axis.set_ylim(
+                    0,
+                    max(
+                        1,
+                        changes[[f"{error} corrected", f"{error} introduced"]]
+                        .to_numpy()
+                        .max(),
+                    )
+                    * 1.25,
+                )
                 axis.set_ylabel("Number of record pairs")
                 axis.grid(axis="y", alpha=0.35)
                 axis.set_axisbelow(True)
                 axis.spines[["top", "right"]].set_visible(False)
-            axes[1].legend(
-                frameon=False, labelcolor=style.text
-            )
+            axes[1].legend(frameon=False, labelcolor=style.text)
             fig.suptitle(
                 f"Errors corrected or introduced vs {baseline}",
                 fontsize=style.title_size,
@@ -551,15 +580,15 @@ def plot_error_changes(
 
 
 def format_duration(seconds: float) -> str:
-    """Format elapsed seconds as milliseconds or hours/minutes/seconds."""
+    """Format elapsed seconds with explicit h, min, and s units."""
     if seconds < 1:
-        return f"{round(seconds * 1_000):,} ms"
+        return f"{seconds:.3f}s"
     hours, remainder = divmod(round(seconds), 3_600)
     minutes, whole_seconds = divmod(remainder, 60)
     if hours:
-        return f"{hours}h {minutes}m {whole_seconds}s"
+        return f"{hours}h {minutes}min {whole_seconds}s"
     if minutes:
-        return f"{minutes}m {whole_seconds}s"
+        return f"{minutes}min {whole_seconds}s"
     return f"{whole_seconds}s"
 
 
@@ -583,9 +612,13 @@ def _save_figure(
         transparent=style.transparent_background,
     )
     if style.export_pdf and path.suffix.lower() == ".png":
-        fig.savefig(path.with_suffix(".pdf"), bbox_inches="tight",
-                    pad_inches=pad_inches, facecolor="none" if style.transparent_background else fig.get_facecolor(),
-                    transparent=style.transparent_background)
+        fig.savefig(
+            path.with_suffix(".pdf"),
+            bbox_inches="tight",
+            pad_inches=pad_inches,
+            facecolor="none" if style.transparent_background else fig.get_facecolor(),
+            transparent=style.transparent_background,
+        )
     if show:
         plt.show()
     return path
@@ -614,7 +647,9 @@ def plot_metrics(
         fig, axis = plt.subplots(figsize=style.figure_size)
         try:
             bar_width = 0.72 / len(labels)
-            for index, (label, values, color) in enumerate(zip(labels, values_by_metric, style.colors)):
+            for index, (label, values, color) in enumerate(
+                zip(labels, values_by_metric, style.colors)
+            ):
                 positions = x + (index - (len(labels) - 1) / 2) * bar_width
                 bars = axis.bar(
                     positions,
@@ -626,8 +661,13 @@ def plot_metrics(
                     hatch=("", "///", "...")[index % 3],
                     label=label,
                 )
-                axis.bar_label(bars, labels=[f"{value:.3f}" for value in values],
-                               padding=4, color=style.text, fontsize=style.table_font_size)
+                axis.bar_label(
+                    bars,
+                    labels=[f"{value:.3f}" for value in values],
+                    padding=4,
+                    color=style.text,
+                    fontsize=style.table_font_size,
+                )
             axis.set_xticks(x, data.methods)
             axis.set_ylim(0, 1.05)
             axis.set_xlim(-0.5, len(data.methods) - 0.5)
@@ -635,7 +675,9 @@ def plot_metrics(
             ticks = axis.get_yticks()
             axis.set_yticks(ticks[(ticks >= 0) & (ticks <= 1)])
             axis.set_ylabel("Score")
-            axis.set_title(title, fontsize=style.title_size, fontweight="normal", pad=12)
+            axis.set_title(
+                title, fontsize=style.title_size, fontweight="normal", pad=12
+            )
             axis.grid(axis="y", linewidth=style.grid_width, alpha=0.65, linestyle=":")
             axis.grid(axis="x", visible=False)
             axis.spines[["top", "right"]].set_visible(False)
@@ -877,8 +919,11 @@ def plot_summary_table(
                         color=style.positive_text if positive else style.negative_text,
                         fontweight="normal",
                     )
-            primary_row = next(index for index, row in enumerate(rows, start=1)
-                               if row[0] == "B-cubed F1")
+            primary_row = next(
+                index
+                for index, row in enumerate(rows, start=1)
+                if row[0] == "B-cubed F1"
+            )
             for column in range(len(columns)):
                 table[(primary_row, column)].set_text_props(fontweight="bold")
             fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
@@ -887,30 +932,57 @@ def plot_summary_table(
             plt.close(fig)
 
 
-def plot_execution_time(data: ReportData, output_path: str | Path, *,
-                        style: PlotStyle = DEFAULT_STYLE, show: bool = False) -> Path:
+def plot_execution_time(
+    data: ReportData,
+    output_path: str | Path,
+    *,
+    style: PlotStyle = DEFAULT_STYLE,
+    show: bool = False,
+) -> Path:
     """Compare positive saved run durations on a logarithmic axis."""
-    seconds = np.array([data.run_summaries[method]["runtime_seconds"]
-                        for method in data.methods], dtype=float)
+    seconds = np.array(
+        [data.run_summaries[method]["runtime_seconds"] for method in data.methods],
+        dtype=float,
+    )
     if not np.isfinite(seconds).all() or (seconds <= 0).any():
         raise ValueError("Execution times must be finite and positive for a log scale")
+    hhc_seconds = float(data.run_summaries["HHC"]["runtime_seconds"])
+    if not np.isfinite(hhc_seconds) or hhc_seconds <= 0:
+        raise ValueError("HHC execution time must be finite and positive")
     lower_bound = 10 ** (np.floor(np.log10(seconds.min())) - 1)
     with plt.rc_context(style.rc_params()):
         fig, axis = plt.subplots(figsize=style.figure_size)
         try:
             positions = np.arange(len(data.methods))
-            for index, (method, duration) in enumerate(zip(data.methods, seconds, strict=True)):
-                axis.barh(index, duration - lower_bound, left=lower_bound,
-                          height=0.52, color=style.colors[index % len(style.colors)],
-                          edgecolor=style.border, linewidth=0.5,
-                          hatch=("", "///", "...")[index % 3])
-                axis.annotate(f"{duration:,.3f} s", (duration, index),
-                              xytext=(6, 0), textcoords="offset points",
-                              va="center", fontsize=style.font_size)
+            for index, (method, duration) in enumerate(
+                zip(data.methods, seconds, strict=True)
+            ):
+                axis.barh(
+                    index,
+                    duration - lower_bound,
+                    left=lower_bound,
+                    height=0.52,
+                    color=style.colors[index % len(style.colors)],
+                    edgecolor=style.border,
+                    linewidth=0.5,
+                    hatch=("", "///", "...")[index % 3],
+                )
+                label = format_duration(duration)
+                if method != "HHC":
+                    label += f"\n({duration / hhc_seconds:.1f}× slower)"
+                axis.annotate(
+                    label,
+                    (duration, index),
+                    xytext=(6, 0),
+                    textcoords="offset points",
+                    va="center",
+                    fontsize=style.font_size,
+                )
             axis.set_yticks(positions, data.methods)
             axis.invert_yaxis()
             axis.set_xscale("log")
             axis.set_xlim(lower_bound, seconds.max() * 2)
+            axis.xaxis.set_major_formatter(LogFormatterMathtext(base=10))
             axis.set_xlabel("Reported execution time (s, logarithmic scale)")
             axis.set_title("Execution time", fontsize=style.title_size, pad=12)
             axis.grid(axis="x", linewidth=style.grid_width, linestyle=":", alpha=0.6)
@@ -918,6 +990,160 @@ def plot_execution_time(data: ReportData, output_path: str | Path, *,
             axis.spines[["top", "right", "left"]].set_visible(False)
             axis.tick_params(axis="y", length=0)
             fig.tight_layout()
+            return _save_figure(fig, output_path, style=style, show=show)
+        finally:
+            plt.close(fig)
+
+
+def plot_methodology(
+    data: ReportData,
+    output_path: str | Path,
+    *,
+    style: PlotStyle = DEFAULT_STYLE,
+    show: bool = False,
+) -> Path:
+    """Compare the implemented clustering workflows, independent of run scores."""
+    from matplotlib.patches import FancyBboxPatch
+
+    with plt.rc_context(style.rc_params()):
+        fig, ax = plt.subplots(figsize=(12, 8))
+        try:
+            ax.set(xlim=(0, 12), ylim=(0, 9))
+            ax.axis("off")
+            ax.text(
+                6,
+                8.7,
+                "Method: shared HHC steps and model extensions",
+                ha="center",
+                fontsize=style.title_size,
+            )
+            ax.text(
+                6,
+                8.3,
+                "Process each ambiguous-name block independently",
+                ha="center",
+                fontsize=9,
+            )
+
+            def box(x, y, text, color, width=3.2, height=1.0):
+                ax.add_patch(
+                    FancyBboxPatch(
+                        (x - width / 2, y - height / 2),
+                        width,
+                        height,
+                        boxstyle="round,pad=0.035,rounding_size=0.07",
+                        facecolor=style.panel,
+                        edgecolor=color,
+                        linewidth=style.line_width,
+                    )
+                )
+                ax.text(
+                    x, y, text, ha="center", va="center", fontsize=9, linespacing=1.4
+                )
+
+            def arrow(points, color, label=None):
+                for start, end in zip(points[:-2], points[1:-1]):
+                    ax.plot([start[0], end[0]], [start[1], end[1]], color=color, lw=1.1)
+                ax.annotate(
+                    "",
+                    xy=points[-1],
+                    xytext=points[-2],
+                    arrowprops=dict(arrowstyle="->", color=color, lw=1.1),
+                )
+                if label:
+                    x, y, text = label
+                    ax.text(x, y, text, ha="center", fontsize=8, color=color)
+
+            hhc, se, gm = style.colors
+            box(
+                6,
+                7.25,
+                "Shared HHC preprocessing and initialization\nNormalize names and lexical evidence; initialize clusters\nusing compatible names and shared coauthors",
+                hhc,
+                width=7,
+                height=1.2,
+            )
+            box(
+                2.5,
+                5.45,
+                "HHC: lexical merging\nCompatible names + title OR venue similarity\nMerge and aggregate until a pass has no merge",
+                hhc,
+                width=4.7,
+            )
+            arrow([(4, 6.62), (4, 6.25), (2.5, 6.25), (2.5, 5.98)], hhc)
+            box(
+                9.1,
+                5.45,
+                "HHC-SE: add SemCSE embeddings\nEncode title + venue; sum record vectors\nReuse the initialized HHC clusters",
+                se,
+                width=4.8,
+            )
+            arrow([(8, 6.62), (8, 6.25), (9.1, 6.25), (9.1, 5.98)], se)
+            box(
+                2.5,
+                3.9,
+                "HHC output: final author clusters\nAlso reused as the starting clusters for HHC-GM\nExisting clusters are never split",
+                hhc,
+                width=4.7,
+            )
+            arrow([(2.5, 4.92), (2.5, 4.43)], hhc)
+            box(
+                9.1,
+                3.9,
+                "HHC-SE: extend HHC merging\nCompatible names + title OR venue OR embeddings\nUpdate evidence and vector sums after each merge",
+                se,
+                width=4.8,
+            )
+            arrow([(9.1, 4.92), (9.1, 4.43)], se)
+            box(
+                9.1,
+                2.35,
+                "HHC-SE output: final author clusters\nStop when a complete pass has no merge",
+                se,
+                width=4.8,
+            )
+            arrow([(9.1, 3.37), (9.1, 2.88)], se)
+            box(
+                2.5,
+                2.35,
+                "HHC-GM: retrieve unresolved HHC pairs\nSemCSE similarity; compatible names\nApply similarity cutoff and top-k filters",
+                gm,
+                width=4.7,
+            )
+            arrow([(2.5, 3.37), (2.5, 2.88)], gm)
+            box(
+                2.5,
+                0.8,
+                "HHC-GM: select evidence and query LLM\nValidate JSON; merge only if positive\nand probability meets the threshold",
+                gm,
+                width=4.7,
+            )
+            arrow([(2.5, 1.82), (2.5, 1.33)], gm)
+            box(
+                9.1,
+                0.8,
+                "HHC-GM output: final author clusters\nStop when no pair is approved\nor the comparison budget is exhausted",
+                gm,
+                width=4.8,
+            )
+            arrow([(4.88, 0.8), (6.67, 0.8)], gm)
+            arrow([(0.12, 0.8), (0.02, 0.8), (0.02, 2.35), (0.12, 2.35)], gm)
+            ax.text(
+                5.75,
+                1.57,
+                "Retrieve again\nafter a merge",
+                ha="center",
+                fontsize=7,
+                color=gm,
+                bbox=dict(facecolor=style.panel, edgecolor="none", pad=1),
+            )
+            ax.text(
+                6,
+                -0.12,
+                "Ground-truth labels are used only for evaluation and audit logs.",
+                ha="center",
+                fontsize=8.5,
+            )
             return _save_figure(fig, output_path, style=style, show=show)
         finally:
             plt.close(fig)
@@ -939,6 +1165,7 @@ def generate_reports(
         "reports_table.png": plot_summary_table,
         "error_changes.png": plot_error_changes,
         "execution_time.png": plot_execution_time,
+        "methodology.png": plot_methodology,
     }
     return {
         name: plot(data, Path(report_dir) / name, style=style, show=show)
@@ -946,8 +1173,17 @@ def generate_reports(
     }
 
 
-PAPER_SECTIONS = ("ABSTRACT", "DATA", "SETTINGS", "RESULTS", "FIGURES", "CONCLUSION")
+PAPER_SECTIONS = (
+    "ABSTRACT",
+    "METHODOLOGY",
+    "DATA",
+    "SETTINGS",
+    "RESULTS",
+    "FIGURES",
+    "CONCLUSION",
+)
 REPORT_FIGURES = {
+    "methodology.png": "Method workflows for HHC, HHC-SE, and HHC-GM. HHC-SE interleaves lexical and semantic merging; HHC-GM adds retrieval and generative judgments after complete HHC",
     "data_statistics.png": "Shared data: totals and min/max/average distributions",
     "bcubed_metrics.png": "B-cubed precision, recall, and F1 on aligned records (primary metric)",
     "pairwise_metrics.png": "Pairwise precision, recall, and F1 on aligned records (secondary metric)",
@@ -956,6 +1192,201 @@ REPORT_FIGURES = {
     "error_changes.png": "Within-name false merges and false splits corrected or introduced against HHC",
     "execution_time.png": "Reported execution time in seconds (logarithmic axis). Neural model setup is excluded. Durations reflect the recorded executions and are not a controlled hardware benchmark",
 }
+
+
+def build_machine_configuration(
+    data: ReportData, output_dir: str | Path = "outputs"
+) -> str:
+    """Build a concise Markdown table from saved experiment environments."""
+    environment_path = Path(output_dir) / "experiment_environment.json"
+    legacy = (
+        json.loads(environment_path.read_text(encoding="utf-8"))
+        if environment_path.exists()
+        else {}
+    )
+    environments = [
+        data.experiment_metadata.get(method, {}).get("environment", legacy)
+        for method in data.methods
+    ]
+    fields = (
+        ("CPU", ("cpu", "model")),
+        ("Logical CPU cores", ("cpu", "logical_processors")),
+        ("RAM", ("system_memory_mib",)),
+        ("GPU", ("gpu", "model")),
+        ("GPU memory", ("gpu", "memory_mib")),
+        ("Operating system", ("operating_system",)),
+        ("Architecture", ("architecture",)),
+        ("Python", ("python_version",)),
+        ("PyTorch", ("pytorch_version",)),
+        ("CUDA runtime (PyTorch)", ("pytorch_cuda_version",)),
+        ("NVIDIA driver", ("gpu", "driver_version")),
+    )
+
+    def cell(environment, path):
+        value = environment
+        for key in path:
+            value = value.get(key) if isinstance(value, dict) else None
+        if value is None:
+            return "Not recorded"
+        if path[-1] in ("system_memory_mib", "memory_mib"):
+            value = f"{value / 1024:.2f} GiB"
+        return escape(str(value)).replace("|", "&#124;").replace("\n", " ")
+
+    rows = [
+        [label, *(cell(env, path) for env in environments)] for label, path in fields
+    ]
+    # Collapse identical machines into one configuration column.
+    shared = all(len(set(row[1:]) - {"Not recorded"}) <= 1 for row in rows)
+    header = ["Component", "Configuration"] if shared else ["Component", *data.methods]
+    if shared:
+        # Retain which runs recorded software details without duplicating hardware.
+        combined = []
+        for row in rows:
+            known = [
+                (method, value)
+                for method, value in zip(data.methods, row[1:])
+                if value != "Not recorded"
+            ]
+            value = known[0][1] if known else "Not recorded"
+            if known and len(known) < len(data.methods):
+                value += (
+                    " (recorded for " + ", ".join(method for method, _ in known) + ")"
+                )
+            combined.append([row[0], value])
+        rows = combined
+    return "\n".join(
+        "| " + " | ".join(row) + " |" for row in [header, ["---"] * len(header), *rows]
+    )
+
+
+def build_machine_configuration_html(
+    data: ReportData,
+    output_dir: str | Path = "outputs",
+    *,
+    style: PlotStyle = DEFAULT_STYLE,
+) -> str:
+    """Render the machine table using the report palette and typography."""
+    lines = build_machine_configuration(data, output_dir).splitlines()
+    rows = [
+        [cell.strip() for cell in line.strip("|").split("|")]
+        for index, line in enumerate(lines)
+        if index != 1
+    ]
+    return _configuration_table_html(rows, "Machine configuration", style)
+
+
+def _configuration_table_html(rows, title: str, style: PlotStyle) -> str:
+    """Render already escaped table cells with the shared report style."""
+    border = escape(style.border, quote=True)
+    body = []
+    for index, row in enumerate(rows):
+        tag = "th" if index == 0 else "td"
+        background = style.header if index == 0 else style.panel
+        cells = "".join(
+            f'<{tag} style="padding:8px 12px;text-align:left;border-bottom:1px solid {border};'
+            f'background:{escape(background, quote=True)}">{value}</{tag}>'
+            for value in row
+        )
+        body.append(f"<tr>{cells}</tr>")
+    return (
+        f'<div style="overflow-x:auto;color:{escape(style.text, quote=True)};'
+        f"font-family:{escape(style.font_family, quote=True)};font-size:{style.font_size}pt;"
+        f'background:{escape(style.background, quote=True)}">'
+        f'<h3 style="font-size:{style.title_size}pt">{escape(title)}</h3>'
+        '<table style="border-collapse:collapse;width:100%">'
+        + "".join(body)
+        + "</table></div>"
+    )
+
+
+def display_machine_configuration(
+    data: ReportData,
+    output_dir: str | Path = "outputs",
+    *,
+    style: PlotStyle = DEFAULT_STYLE,
+) -> None:
+    """Display the styled machine configuration in a notebook."""
+    from IPython.display import HTML, display
+
+    display(HTML(build_machine_configuration_html(data, output_dir, style=style)))
+
+
+def build_model_parameters_html(
+    data: ReportData, *, style: PlotStyle = DEFAULT_STYLE
+) -> str:
+    """Show recorded run parameters in one styled table per method."""
+    excluded = {
+        "output",
+        "metrics_output",
+        "prompts_output",
+        "decisions_output",
+        "decision_cache",
+        "embedding_cache",
+        "model_cache",
+        "rebuild_cache",
+        "no_progress",
+    }
+    tables = []
+    for method in data.methods:
+        metadata = data.experiment_metadata.get(method, {})
+        # Historical runs may only have parameters embedded in their metrics.
+        parameters = metadata.get("parameters")
+        if parameters is None:
+            parameters = {
+                key: value
+                for key, value in data.run_summaries[method].items()
+                if key
+                in {
+                    "input",
+                    "n_ambiguous_group",
+                    "seed",
+                    "device",
+                    "model",
+                    "model_revision",
+                    "title_threshold",
+                    "venue_threshold",
+                    "semantic_threshold",
+                    "batch_size",
+                    "max_length",
+                    "embedding_model",
+                    "embedding_batch_size",
+                    "embedding_max_length",
+                    "llm_confidence_threshold",
+                    "semantic_candidate_threshold",
+                    "semantic_top_k",
+                    "candidate_score",
+                    "max_llm_comparisons_per_group",
+                    "max_records_per_cluster",
+                    "max_input_tokens",
+                    "max_new_tokens",
+                    "llm_retries",
+                    "cpu_threads",
+                    "cpu_int8",
+                }
+            }
+        parameters = {
+            key: value for key, value in parameters.items() if key not in excluded
+        }
+        if "device" in metadata.get("resolved", {}):
+            parameters["resolved_device"] = metadata["resolved"]["device"]
+        rows = [["Parameter", "Value"]]
+        rows.extend(
+            [escape(str(key)), escape(str(value))]
+            for key, value in sorted(parameters.items())
+        )
+        if len(rows) == 1:
+            rows.append(["Parameters", "Not recorded"])
+        tables.append(_configuration_table_html(rows, f"{method} parameters", style))
+    return "\n".join(tables)
+
+
+def display_model_parameters(
+    data: ReportData, *, style: PlotStyle = DEFAULT_STYLE
+) -> None:
+    """Display the saved parameter tables in a notebook."""
+    from IPython.display import HTML, display
+
+    display(HTML(build_model_parameters_html(data, style=style)))
 
 
 def build_paper_sections(
@@ -968,9 +1399,11 @@ def build_paper_sections(
     """Generate factual paper sections from current aligned scores and run metadata."""
     baseline = data.methods[0]
     summaries = {
-        method: {**data.run_summaries[method],
-                 **data.experiment_metadata.get(method, {}).get("parameters", {}),
-                 **data.experiment_metadata.get(method, {}).get("resolved", {})}
+        method: {
+            **data.run_summaries[method],
+            **data.experiment_metadata.get(method, {}).get("parameters", {}),
+            **data.experiment_metadata.get(method, {}).get("resolved", {}),
+        }
         for method in data.methods
     }
     scores = data.scores
@@ -986,13 +1419,13 @@ def build_paper_sections(
         f"Using a subset of the LAGOS-AND dataset, the shared evaluation cohort contains {len(data.common):,} records from "
         f"{data.common['ambiguous_name'].nunique():,} ambiguous-name groups and "
         f"{data.common['label'].nunique():,} real authors. "
-        + "B-cubed F1 (the primary metric) is "
+        + "B-cubed F1 is "
         + ", ".join(
             f"{scores[method]['b3_f1']:.4f} for {method}" for method in data.methods
         )
         + ". "
-        f"{best} has the highest B-cubed F1 in these saved runs. "
-        "The results describe one saved experiment per method, without a significance test."
+        f"{best} has the highest B-cubed F1 in the reported experimental evaluation. "
+        "The results describe one experiment per method, without a significance test."
     )
     dataset = (
         "We evaluate on a subset of LAGOS-AND [[6]](#ref-6), using ORCID-based "
@@ -1001,13 +1434,18 @@ def build_paper_sections(
         "retaining every HHC-GM occurrence and requiring a match in both other runs. "
         "Baseline and semantic runs can contain extra records. Duplicate occurrences remain "
         "in evaluation, while the descriptive paper counts use distinct paper IDs.\n\n"
-        + "See Figure 1 for shared-data statistics."
+        + "See Figure 2 for shared-data statistics."
         + "\n\nAuthors are identified by ground-truth ORCID IDs. The number of authors per "
         "ambiguous-name group is computed independently for each group, and a publication "
         "may appear in more than one group."
     )
+
     def enumerate_methods(methods):
-        return methods[0] if len(methods) == 1 else ", ".join(methods[:-1]) + " and " + methods[-1]
+        return (
+            methods[0]
+            if len(methods) == 1
+            else ", ".join(methods[:-1]) + " and " + methods[-1]
+        )
 
     def numeric(value):
         return f"{value:,}" if isinstance(value, int) else str(value)
@@ -1016,19 +1454,36 @@ def build_paper_sections(
     grouped_settings = {}
     for method in data.methods:
         summary = summaries[method]
-        key = tuple(summary.get(field, "Not recorded") for field in (
-            "input", "seed", "records", "n_ambiguous_group", "title_threshold", "venue_threshold"))
+        key = tuple(
+            summary.get(field, "Not recorded")
+            for field in (
+                "input",
+                "seed",
+                "records",
+                "n_ambiguous_group",
+                "title_threshold",
+                "venue_threshold",
+            )
+        )
         grouped_settings.setdefault(key, []).append(method)
-    settings = "#### Experimental cohort and lexical thresholds\n\n"
+    settings = "#### 4.2.1 Experimental cohort and lexical thresholds\n\n"
     descriptions = []
-    for (source, seed, records, groups, title, venue), methods in grouped_settings.items():
+    for (
+        source,
+        seed,
+        records,
+        groups,
+        title,
+        venue,
+    ), methods in grouped_settings.items():
         descriptions.append(
             f"{enumerate_methods(methods)} {'was' if len(methods) == 1 else 'were'} evaluated using `{source}`, with "
             f"{numeric(records)} publication records and a requested sample of {numeric(groups)} "
             f"complete ambiguous-name groups. Group sampling used random seed {seed}. "
             f"The title and venue cosine-similarity thresholds were set to {title} and {venue}, "
             "respectively. Lexical merging required compatible author names and similarity exceeding "
-            "at least one of these lexical thresholds.")
+            "at least one of these lexical thresholds."
+        )
     settings += "\n\n".join(descriptions)
     settings += (
         " The sampling seed determines the selected name blocks and does not represent a neural training seed. "
@@ -1037,11 +1492,12 @@ def build_paper_sections(
         "input order. Each method operates on the selected records independently, and the reported scores "
         "are recomputed on their aligned evaluation cohort. No encoder or generative model is fine-tuned "
         "on this cohort. The reported settings describe the saved runs, rather than any later changes "
-        "to experiment scripts. Threshold selection is not documented as a separate validation experiment.")
+        "to experiment scripts. Threshold selection is not documented as a separate validation experiment."
+    )
     semantic = summaries.get("HHC-SE", {})
     gm = summaries.get("HHC-GM", {})
     settings += (
-        "\n\n#### Semantic representations and candidate retrieval\n\n"
+        "\n\n#### 4.2.2 Semantic representations and candidate retrieval\n\n"
         f"HHC-SE used the pretrained `{semantic.get('model', 'Not recorded')}` encoder "
         f"on {str(semantic.get('device', 'Not recorded')).replace('cuda', 'CUDA').replace('cpu', 'CPU')}, with an additional semantic merge "
         f"threshold of {semantic.get('semantic_threshold', 'Not recorded')}. This threshold "
@@ -1053,16 +1509,21 @@ def build_paper_sections(
         "(a value of zero denotes no neighbor limit). A pair was eligible when selected by "
         "either cluster. Retrieval identified pairs for LLM assessment and did not itself authorize a merge. "
         f"The retrieval encoder processed batches of {gm.get('embedding_batch_size', 'Not recorded')} "
-        f"records with a maximum sequence length of {gm.get('embedding_max_length', 'Not recorded')} tokens. ")
-    if 'batch_size' in semantic and 'max_length' in semantic:
-        settings += (f"For HHC-SE, batch size and maximum sequence length were "
-                     f"{semantic['batch_size']} and {semantic['max_length']}, respectively.")
+        f"records with a maximum sequence length of {gm.get('embedding_max_length', 'Not recorded')} tokens. "
+    )
+    if "batch_size" in semantic and "max_length" in semantic:
+        settings += (
+            f"For HHC-SE, batch size and maximum sequence length were "
+            f"{semantic['batch_size']} and {semantic['max_length']}, respectively."
+        )
     else:
         settings += "The HHC-SE metadata do not record its encoder batch size and maximum sequence length."
-    retries = gm.get('llm_retries', 'Not recorded')
-    quantization = {True: 'enabled', False: 'disabled'}.get(gm.get('cpu_int8'), 'not recorded')
+    retries = gm.get("llm_retries", "Not recorded")
+    quantization = {True: "enabled", False: "disabled"}.get(
+        gm.get("cpu_int8"), "not recorded"
+    )
     settings += (
-        "\n\n#### Generative model and decision criteria\n\n"
+        "\n\n#### 4.2.3 Generative model and decision criteria\n\n"
         f"Cluster-pair assessment used `{gm.get('model', 'Not recorded')}` "
         f"at revision `{gm.get('model_revision', 'Not recorded')}` on "
         f"{str(gm.get('device', 'Not recorded')).replace('cuda', 'CUDA').replace('cpu', 'CPU')}. Each prompt included at most "
@@ -1078,63 +1539,16 @@ def build_paper_sections(
         "cluster-pair assessments per name block (zero denotes an unlimited budget). "
         "Retries can increase the number of inference calls without increasing this pair budget. "
         f"CPU int8 quantization was {quantization}, with a configured CPU thread count of "
-        f"{gm.get('cpu_threads', 'Not recorded')}.")
-    environment_path = Path(output_dir) / "experiment_environment.json"
-    legacy_environment = (json.loads(environment_path.read_text(encoding="utf-8"))
-                          if environment_path.exists() else {})
-    environments = {}
-    for method in data.methods:
-        metadata = data.experiment_metadata.get(method)
-        environment = metadata.get("environment", {}) if metadata is not None else legacy_environment
-        environments.setdefault(json.dumps(environment, sort_keys=True), []).append(method)
-    settings += "\n\n#### Computational environment\n\n"
-    descriptions = []
-    for serialized, methods in environments.items():
-        environment = json.loads(serialized)
-        if not environment:
-            descriptions.append(f"The hardware specification for {enumerate_methods(methods)} was not recorded.")
-            continue
-        cpu, gpu = environment.get("cpu", {}), environment.get("gpu", {})
-        description = (
-            f"For {enumerate_methods(methods)}, the execution environment used "
-            f"{environment.get('architecture', 'an unrecorded architecture')} with "
-            f"{cpu.get('logical_processors', 'an unrecorded number of')} logical CPU processors "
-            f"on an {cpu.get('model', 'unrecorded CPU')}. ")
-        topology = [(cpu.get(key), label) for key, label in (
-            ("sockets", "sockets"), ("cores_per_socket", "cores per socket"),
-            ("threads_per_core", "threads per core")) if cpu.get(key) is not None]
-        if topology:
-            description += "The exposed CPU topology was " + ", ".join(
-                f"{value} {label}" for value, label in topology) + ". "
-        if environment.get('virtualization'):
-            description += f"Virtualization used {environment['virtualization']}. "
-        if gpu:
-            description += (
-                f"The available GPU was an {gpu.get('model', 'unrecorded GPU')} with "
-                f"{numeric(gpu.get('memory_mib', 'unrecorded'))} MiB of device memory. "
-                f"The NVIDIA driver version was {gpu.get('driver_version', 'not recorded')}. ")
-            if gpu.get('driver_supported_cuda_version'):
-                description += (f"The driver reported support for CUDA {gpu['driver_supported_cuda_version']}, "
-                                "which does not establish the CUDA runtime used by PyTorch. ")
-        else:
-            description += "No NVIDIA GPU information was recorded. "
-        for key, label in (("operating_system", "Operating system"), ("python_version", "Python"),
-                           ("pytorch_version", "PyTorch"), ("pytorch_cuda_version", "PyTorch CUDA runtime"),
-                           ("system_memory_mib", "System memory (MiB)")):
-            if environment.get(key) is not None:
-                description += f"{label}: {environment[key]}. "
-        missing = [label for key, label in (("operating_system", "operating-system version"),
-                    ("system_memory_mib", "system RAM"), ("pytorch_cuda_version", "PyTorch CUDA runtime"))
-                   if environment.get(key) is None]
-        if missing:
-            description += "Information not recorded includes " + ", ".join(missing) + ". "
-        description += f"Metadata provenance: {environment.get('source', 'not recorded')}."
-        descriptions.append(description)
-    settings += "\n\n".join(descriptions)
+        f"{gm.get('cpu_threads', 'Not recorded')}."
+    )
+    settings += (
+        "\n\n#### 4.2.4 Computational environment\n\n"
+        + build_machine_configuration(data, output_dir)
+    )
     prompt_path = (
         Path(output_dir) / Path(gm.get("prompts_output", "hhc_gm_prompts.json")).name
     )
-    settings += "\n\n#### LLM prompt and response protocol\n\n"
+    settings += "\n\n#### 4.2.5 LLM prompt and response protocol\n\n"
     if prompt_path.exists():
         entries = json.loads(prompt_path.read_text(encoding="utf-8"))
         prompts = [
@@ -1167,10 +1581,14 @@ def build_paper_sections(
             payload_example = None
             for prompt in sorted(prompts, key=len):
                 try:
-                    payload = json.loads(prompt.split("<clusters>\n", 1)[1].split("\n</clusters>", 1)[0])
+                    payload = json.loads(
+                        prompt.split("<clusters>\n", 1)[1].split("\n</clusters>", 1)[0]
+                    )
                 except (IndexError, json.JSONDecodeError):
                     continue
-                if isinstance(payload, dict) and all(key in payload for key in ("A", "B", "name_evidence")):
+                if isinstance(payload, dict) and all(
+                    key in payload for key in ("A", "B", "name_evidence")
+                ):
                     payload_example = payload
                     break
             if payload_example is not None:
@@ -1178,25 +1596,33 @@ def build_paper_sections(
                     "\n\nThe following is the complete populated input from the shortest recorded "
                     "prompt. It follows the instructions above. The example was selected for brevity, "
                     "not as evidence of model accuracy.\n\n```text\nInput:\n<clusters>\n"
-                    + json.dumps(payload_example, ensure_ascii=False, indent=2).replace("```", "` ` `")
+                    + json.dumps(payload_example, ensure_ascii=False, indent=2).replace(
+                        "```", "` ` `"
+                    )
                     + "\n</clusters>\nAnswer:\n```\n\n"
                     "A syntactically valid response has the following form. This response is "
                     "illustrative and is not an observed judgment of the example above.\n\n```json\n"
-                    + json.dumps({"same_author": True, "same_author_probability": 0.9,
-                                  "reason": "Matching focal names and a specific research connection support identity."},
-                                 indent=2)
+                    + json.dumps(
+                        {
+                            "same_author": True,
+                            "same_author_probability": 0.9,
+                            "reason": "Matching focal names and a specific research connection support identity.",
+                        },
+                        indent=2,
+                    )
                     + "\n```\n\n"
                     "The boolean and probability must agree with the prompt's 0.5 decision rule. "
                     "A positive judgment below the experimental merge threshold leaves the clusters "
                     "separate. Malformed responses are retried within the stated limit, and unresolved "
                     "or oversized comparisons leave clusters separate. For Qwen, the prompt is supplied "
-                    "as a user message through the model's chat template with thinking disabled.")
+                    "as a user message through the model's chat template with thinking disabled."
+                )
         else:
             settings += "The saved prompt log contains no sent prompts. No run-specific prompt is available."
     else:
         settings += "No saved prompt log was found for this run. Its exact prompt cannot be verified from these artifacts."
     settings += (
-        "\n\n#### Evaluation protocol\n\n"
+        "\n\n#### 4.2.6 Evaluation protocol\n\n"
         "B-cubed F1 is the primary metric. Let N be the number of evaluated publication "
         "occurrences, C(i) the predicted cluster containing occurrence i, and G(i) its "
         "ground-truth author cluster. Record-level precision and recall are averaged over "
@@ -1222,7 +1648,7 @@ def build_paper_sections(
         "cluster precision and average author purity (AAP) equals its record-averaged author recall. For block b, K(b)=sqrt(ACP(b) × AAP(b)). "
         "Reported ACP, AAP, and K are arithmetic means over blocks, giving equal weight "
         "to each block. Higher values indicate better performance for all reported metrics.\n\n"
-        "#### Scope and reproducibility limits\n\n"
+        "#### 4.2.7 Scope and reproducibility limits\n\n"
         "The study reports one execution per method on the selected cohort. No repeated-seed "
         "confidence intervals or significance tests were performed. The model revision `main` "
         "is mutable, and exact checkpoint hashes were not preserved. Missing historical settings "
@@ -1245,7 +1671,7 @@ def build_paper_sections(
             f"{(scores[method]['b3_f1'] - scores[baseline]['b3_f1']) * 100:+.3f} percentage points for {method}"
             for method in data.methods[1:]
         )
-        + ". Figure 2 presents the B-cubed results, Figure 5 summarizes all evaluation metrics, and Figure 6 quantifies changes in pairwise errors."
+        + ". Figure 3 presents the B-cubed results, Figure 6 summarizes all evaluation metrics, and Figure 7 quantifies changes in pairwise errors."
     )
     changes = build_error_changes(data)
     results += (
@@ -1254,16 +1680,16 @@ def build_paper_sections(
         "These are pair counts, not numbers of authors or cluster merges. Improvements from "
         "semantic evidence are not guaranteed to preserve HHC's exact merge sequence. HHC-GM "
         "starts with completed HHC clusters and only merges, so it cannot repair a baseline false merge."
-        "\n\n### Timing\n\nFigure 7 compares the reported execution times using a logarithmic scale. HHC includes data loading, preprocessing, clustering, evaluation, and prediction "
+        "\n\n### 5.1 Timing\n\nFigure 8 compares the reported execution times using a logarithmic scale. HHC includes data loading, preprocessing, clustering, evaluation, and prediction "
         "export. HHC-SE additionally accounts for embedding computation, and HHC-GM reports "
         "the measured duration of its recorded execution. Both neural methods "
         "exclude model setup/download. Metrics JSON writing occurs after the timers. These times "
         "reflect the recorded executions rather than a controlled hardware benchmark."
     )
     results += (
-        "\n\nThe measured execution times were "
+        "\n\nThe measured execution times (s, min, h) were "
         + ", ".join(
-            f"{summaries[method]['runtime_seconds']:.3f} s for {method}"
+            f"{format_duration(summaries[method]['runtime_seconds'])} for {method}"
             for method in data.methods
         )
         + "."
@@ -1276,20 +1702,21 @@ def build_paper_sections(
     diagnostics = summaries.get("HHC-GM", {}).get("decision_diagnostics", {})
     if diagnostics:
         results += (
-            "\n\n### LLM judgment audit\n\n"
+            "\n\n### 5.2 LLM judgment audit\n\n"
             f"Evaluation of {diagnostics.get('labeled_valid_comparisons', 'Not recorded')} "
             "valid labeled cluster-pair judgments yielded "
             f"{diagnostics.get('true_positive', 'Not recorded')} correct matches, "
             f"{diagnostics.get('false_positive', 'Not recorded')} incorrect matches, "
             f"{diagnostics.get('true_negative', 'Not recorded')} correct "
             f"{'separation' if diagnostics.get('true_negative') == 1 else 'separations'}, and "
-            f"{diagnostics.get('false_negative', 'Not recorded')} missed matches. ")
-        brier = diagnostics.get('brier_score')
+            f"{diagnostics.get('false_negative', 'Not recorded')} missed matches. "
+        )
+        brier = diagnostics.get("brier_score")
         if brier is not None:
             results += f"The Brier score was {brier:.4f}. "
         results += (
             "These judgments concern retrieved cluster pairs "
-            "and differ from the publication-pair errors in Figure 6. The stated probabilities "
+            "and differ from the publication-pair errors in Figure 7. The stated probabilities "
             "are not assumed calibrated. Brier score evaluates their squared probability error. "
             "Candidate selection and earlier merges condition this audit sample."
         )
@@ -1316,10 +1743,15 @@ def build_paper_sections(
         )
         + "."
     )
-    figures = "\n\n".join(
-        f"**Figure {number}. {caption}.**\n\n![{caption}]({link(Path(report_dir) / filename)})"
+    figure_blocks = {
+        filename: f"**Figure {number}. {caption}.**\n\n![{caption}]({link(Path(report_dir) / filename)})"
         for number, (filename, caption) in enumerate(REPORT_FIGURES.items(), start=1)
+    }
+    methodology = (
+        "Figure 1 summarizes the steps of all three methods, including their merge criteria "
+        "and stopping conditions.\n\n" + figure_blocks.pop("methodology.png")
     )
+    figures = "\n\n".join(figure_blocks.values())
     conclusion = (
         f"In the current shared cohort, {best} obtains the highest B-cubed F1 "
         f"({scores[best]['b3_f1']:.4f}). "
@@ -1334,13 +1766,12 @@ def build_paper_sections(
         "additional evidence rather than assuming topical similarity implies identity. "
         "A stronger study needs disjoint validation/test groups, repeated seeds, confidence intervals "
         "over name blocks, pinned checkpoints, and controlled runtime measurements. "
-        "A splitting mechanism is also needed to recover from incorrect baseline merges. "
-        "No general superiority beyond these saved runs is established."
+        "A splitting mechanism is also needed to recover from incorrect baseline merges."
     )
     return dict(
         zip(
             PAPER_SECTIONS,
-            (abstract, dataset, settings, results, figures, conclusion),
+            (abstract, methodology, dataset, settings, results, figures, conclusion),
             strict=True,
         )
     )

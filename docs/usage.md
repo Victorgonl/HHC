@@ -1,0 +1,325 @@
+# Heuristic-Based Hierarchical Clustering Disambiguation (HHC)
+
+[**Heuristic-based Hierarchical Clustering (HHC)**](../src/hhc.py) for
+**Author Name Disambiguation (AND)**. Given bibliographic records containing an ambiguous
+author name, coauthors, a publication title, and a venue, the algorithm groups records that
+are likely to belong to the same real person.
+
+## Method
+
+HHC has two clustering stages:
+
+1. **Name and coauthor stage**
+   - Normalize author and coauthor names.
+   - Process longer author-name forms before abbreviated forms.
+   - Put compatible author names in the same cluster when they share a
+     compatible coauthor.
+2. **Title and venue stage**
+   - Remove stop words and stem title and venue terms.
+   - Calculate cosine similarity between cluster-level term counts.
+   - Repeatedly merge compatible-name clusters when either their title or venue
+     similarity exceeds its configured threshold.
+
+The dataset includes the focal author in the `coauthors` list. The implementation
+removes that author before looking for a shared coauthor.
+
+## Input format
+
+The input must be a UTF-8 CSV file with these columns:
+
+| Column | Description |
+|---|---|
+| `ambiguous_name` | Blocking key identifying records that may refer to the same author name. |
+| `paper_id` | Publication identifier, such as a DOI. |
+| `author_name` | Author-name form appearing on the publication. |
+| `coauthors` | List of author names. |
+| `title` | Publication title. |
+| `venue` | Journal or conference name. It may be empty. |
+| `label` | Ground-truth author identity used for evaluation and HHC-GM's ideal prompt labels. |
+
+## Dataset
+
+[LAGOS-AND](https://zenodo.org/records/7313353) dataset, available in `data/lagosandv1_test.csv` contains 191,745 records with 9,950 ambiguous groups.
+
+## Running HHC
+
+Run the complete dataset with the default parameters:
+
+```bash
+python src/hhc.py data/lagosandv1_test.csv
+```
+
+This creates:
+
+- `outputs/hhc_predictions.csv`
+- `outputs/hhc_metrics.json`
+
+Command-line options:
+
+```text
+hhc.py        input
+              [-h] [-o OUTPUT] 
+              [--metrics-output METRICS_OUTPUT]
+              [--title-threshold TITLE_THRESHOLD]
+              [--venue-threshold VENUE_THRESHOLD]
+              [--n-ambiguous-group N] [--seed SEED]
+              [--no-progress]
+```
+
+| Option | Default | Purpose |
+|---|---|---|
+| `input` | — | Input CSV path. |
+| `-o`, `--output` | `outputs/hhc_predictions.csv` | Prediction CSV path. |
+| `--metrics-output` | `outputs/hhc_metrics.json` | Evaluation-summary JSON path. |
+| `--title-threshold` | `0.30` | Minimum title cosine similarity for merging. |
+| `--venue-threshold` | `0.50` | Minimum venue cosine similarity for merging. |
+| `--n-ambiguous-group N` | All groups | Randomly select `N` complete ambiguous-name groups. |
+| `--seed SEED` | `42` | Reproduce the same group selection. |
+| `--no-progress` | Off | Disable `tqdm` progress bars. |
+
+Thresholds must be between 0 and 1.
+
+## Outputs
+
+The prediction CSV contains:
+
+```text
+paper_id,ambiguous_name,label,predicted_cluster
+```
+
+Cluster identifiers have the form:
+
+```text
+<ambiguous_name>::<cluster_number>
+```
+
+If the input contains `label`, the metrics JSON reports:
+
+- number of records, ambiguous groups, true authors, and predicted clusters;
+- pairwise precision, recall, and F1;
+- B-cubed precision, recall, and F1;
+- average cluster purity (ACP), average author purity (AAP), and
+  `K = sqrt(ACP × AAP)` metric, calculated per ambiguous group and
+  macro-averaged as in the paper;
+- title and venue thresholds used for the run;
+- total runtime in seconds, including input parsing, clustering, evaluation, and outputs-file writing.
+
+If `label` is absent, predictions are still generated, but supervised evaluation
+metrics are omitted.
+
+## Heuristic-Based Hierarchical Clustering with Semantic Evidence (HHC-SE)
+ 
+[**HHC-SE**](../src/hhc_se.py) is semantic-evidence extension of HHC. The HHC-SE pipeline:
+
+1. runs the same HHC name/coauthor first stage;
+2. runs the same title and venue merge rules;
+3. additionally merges compatible-name clusters when their pretrained semantic embedding cosine similarity exceeds a semantic threshold.
+
+The current implementation uses the pretrained
+[`CLAUSE-Bielefeld/SemCSE_cosine`](https://huggingface.co/CLAUSE-Bielefeld/SemCSE_cosine)
+model with the official final-layer `[CLS]` pooling. Each model input is:
+
+```text
+Title: <publication title>
+Venue: <publication venue>
+```
+Downloaded Hugging Face files are stored under `./models` by default.
+The extensed parameters are:
+
+| Option | Default | Purpose |
+|---|---|---|
+| `--semantic-threshold` | `0.80` | Minimum SemCSE cluster cosine for a semantic merge. |
+| `--model` | `CLAUSE-Bielefeld/SemCSE_cosine` | Hugging Face model identifier. |
+| `--model-cache` | `models` | Directory for downloaded Hugging Face model files. |
+| `--batch-size` | `16` | Transformer inference batch size. |
+| `--max-length` | `256` | Maximum input token count. |
+| `--device` | `auto` | Use CUDA when available, otherwise CPU. |
+| `--embedding-cache` | `outputs/semcse_cosine_embeddings.pt` | Cached half-precision embeddings. |
+
+## Heuristic-Based Hierarchical Clustering with Generative LLM extension (HHC-GM)
+
+[**HHC-GM**](../src/hhc_gm.py) extends HHC with a local generative model that
+judges whether unresolved clusters represent the same author:
+
+1. Run both classic HHC stages with their existing name, coauthor, title, and venue rules.
+2. Rank the remaining compatible-name cluster pairs using cosine similarity of
+   summed SemCSE paper embeddings. Retain up to `k` neighbors per cluster; a pair
+   qualifies if either cluster selects the other.
+3. Ask a local instruction-tuned LLM to compare the clusters' author names,
+   coauthors, titles, and venues. Merge only on a valid positive JSON decision
+   whose stated same-author probability meets the configured threshold.
+4. Recompute candidates after each merge, until no approved pair remains or the
+   per-group comparison budget is exhausted.
+
+Models run locally using the existing PyTorch and Transformers dependencies; missing model files download
+to `models`. No API key is required. The judge loads only when a candidate pair
+needs review, and models are skipped entirely when classic HHC leaves no unresolved pairs.
+Each prompt sent to the model is written to `outputs/hhc_gm_prompts.json` with
+an ideal `label` derived from the input's ground truth:
+
+```json
+[
+  {"prompt": "Decide whether these two bibliographic clusters...", "label": true}
+]
+```
+
+`label` is `true` for a known same-author pair, `false` for known different
+authors, and `null` if the input lacks labels or either cluster already mixes
+ground-truth identities. The ideal label is never included in the model prompt.
+
+| Option | Default | Purpose |
+|---|---|---|
+| `--model` | `Qwen/Qwen3-1.7B` | Local Hugging Face causal language model or model directory. |
+| `--model-cache` | `models` | Model download directory. |
+| `--device` | `auto` | CUDA when available, otherwise CPU. |
+| `--llm-confidence-threshold` | `0.70` | Minimum stated same-author probability for an additional merge. |
+| `--semantic-candidate-threshold` | `0.55` | Minimum embedding cosine for LLM review. |
+| `--semantic-top-k` | `5` | Neighbors retained per cluster; `0` is unlimited. |
+| `--max-llm-comparisons-per-group` | `25` | Pair-decision budget; `0` is unlimited. |
+| `--max-records-per-cluster` | `8` | Maximum publications shown per cluster, in input order. |
+| `--max-input-tokens` | `2048` | Maximum prompt length. |
+| `--max-new-tokens` | `128` | Maximum generated response length. |
+| `--llm-retries` | `1` | Additional attempts after an invalid response. |
+| `--prompts-output` | `outputs/hhc_gm_prompts.json` | JSON file containing each sent prompt and its ideal label. |
+| `--embedding-model` | `CLAUSE-Bielefeld/SemCSE_cosine` | Candidate retrieval encoder. |
+| `--embedding-batch-size` | `16` | Encoder batch size. |
+| `--embedding-max-length` | `256` | Encoder token limit. |
+
+Labels are used only for evaluation and the prompt JSON's ideal answer, never for
+candidate selection or model prompts. The focal author is excluded from displayed coauthors. All
+cross-cluster author-name forms must be compatible for an LLM merge. Semantic
+similarity alone never triggers an additional merge. Existing HHC merges are
+preserved, so the LLM stage cannot split an incorrect baseline cluster.
+
+Generation uses greedy decoding. Malformed or inconsistent responses are retried
+and then leave clusters separate. Prompts are shortened by reducing the number of
+displayed publications, keeping at least one from each cluster; pairs that still
+exceed the context budget remain separate. Such failures are counted in metrics
+and produce no prompt entry because nothing is sent to the model.
+
+## Results reports
+
+Table bellow is generated using the [reports notebook](../notebooks/reports.ipynb).
+
+![alt text](../figs/reports_table.png)
+
+### GM evidence, caching, and diagnostics
+
+GM selects publications using shared collaborators, cross-cluster title terms,
+then vocabulary coverage, rather than taking the first records in input order.
+All coauthors and titles used for this selection are label-free. A positive LLM
+judgment is still required for every additional merge.
+
+Prompts list the focal author's name variants separately from publication
+collaborators and provide label-free name compatibility and full-name evidence.
+The judge compares specific research connections and treats changes in
+collaborators, venues, and publication counts as neutral evidence. Fixed example
+answers are omitted to avoid encouraging copied decisions. Changes to this
+prompt update its fingerprint, so older decisions are not reused. Accuracy
+improvements must still be measured on held-out data.
+
+Additional options:
+
+| Option | Default | Purpose |
+|---|---|---|
+| `--decision-cache` | `outputs/hhc_gm_decisions_cache.jsonl` | Persistent valid decisions; reused before loading the judge. |
+| `--decisions-output` | `outputs/hhc_gm_decisions.jsonl` | Raw responses, decisions, ground truth for auditing, cache status, and latency. |
+| `--embedding-cache` | `outputs/semcse_cosine_embeddings.pt` | Reuses the HHC-SE embedding cache when its data/model fingerprint matches. |
+| `--rebuild-cache` | off | Ignore saved decisions and rebuild embeddings. |
+| `--retrieval-diagnostics` | off | Audit same-author candidate coverage through name filtering, semantic filtering, top-k and initial budget. |
+| `--model-revision` | `main` | Model revision; use a commit hash for reproducible experiments. |
+| `--cpu-int8` | off | Optional dynamic int8 quantization of CPU linear layers. |
+| `--cpu-threads` | `4` | CPU thread count; `0` preserves the PyTorch default. |
+
+Decision cache keys include the prompt version, model/revision, inference
+settings, device, and both clusters' publication contents. Labels and merge
+thresholds are excluded, so a validation sweep can reuse judgments without
+leaking ground truth into inference. Invalid responses and context failures are
+not cached. Use a distinct cache or `--rebuild-cache` after updating a model
+behind a mutable revision such as `main`. Quantized CPU and GPU results may differ.
+
+Metrics now include judgment confusion counts, Brier score, and confidence bins
+for valid labeled comparisons. These audit the reviewed pairs, whose distribution
+changes after merges; they are not independent estimates of overall accuracy.
+Retrieval diagnostics count initially available pure same-author cluster pairs;
+after merges the candidate set and comparison budget coverage can change.
+`current_run_seconds` and `runtime_seconds` report actual current execution time
+excluding model setup. Cache hits and inference time are reported separately;
+do not compare a cached run's time against an uncached run as a model speedup.
+
+### Judge selection and experiment configuration
+
+`Qwen/Qwen3-1.7B` is the default judge. Its chat template is called with
+`enable_thinking=False`, keeping the output budget for the JSON answer. The
+previous judge remains available through
+`--model HuggingFaceTB/SmolLM2-1.7B-Instruct`. This default change follows targeted
+synthetic checks of the collaborator-confusion failure; it does not establish
+superior clustering accuracy on the full dataset. The model's official instructions are at
+<https://huggingface.co/Qwen/Qwen3-1.7B>.
+
+```bash
+python src/hhc_gm.py data/lagosandv1_test.csv \
+  --n-ambiguous-group 50 --seed 1 --model Qwen/Qwen3-1.7B \
+  --device auto --retrieval-diagnostics
+```
+
+Experiments can run locally or in a hosted notebook environment with the project
+dependencies installed and access to the input data. Use the same input groups,
+seed, and retrieval settings when comparing judges, and specify separate output
+paths for each run. GM's automatic device selection uses CUDA when available
+with at least 6 GB of GPU memory, otherwise CPU. An explicit `--device cuda`
+overrides this fallback. Optional `--cpu-int8` quantization applies only to CPU
+inference.
+
+### Validation without tuning on the test set
+
+Use a **separate labeled validation CSV**, with ambiguous-name groups disjoint
+from the final test set. The sweep reruns clustering for every configuration,
+including merges that change later candidate pairs, and reuses cached judgments.
+It saves all trial metrics and selects the best validation pairwise F1 satisfying
+the configured precision floor. If no trial qualifies, selection is null.
+
+```bash
+python -m src.tune_hhc_gm data/validation.csv \
+  --model Qwen/Qwen3-1.7B --device auto \
+  --confidence-grid 0.7 0.8 0.9 --semantic-grid 0.4 0.55 \
+  --top-k-grid 5 10 --minimum-precision 0.98
+```
+
+Freeze the selected settings before the final test run. The repository currently
+contains a test dataset only; no thresholds are selected or models fine-tuned on
+that test data.
+
+### Reusable reporting and plot style
+
+All three experiment runners save `hhc_experiment.json`, `hhc_se_experiment.json`, or `hhc_gm_experiment.json` beside the corresponding metrics JSON. Each artifact stores all parsed arguments (including defaults), the resolved device, and the hardware and software environment collected on the execution machine. This includes HHC-SE's batch size and token limit. Metadata collection occurs after the runtime timer stops and does not load neural models for classical HHC. Unavailable hardware commands leave information unspecified rather than preventing CPU-only execution.
+
+The report reads these artifacts automatically. Legacy results remain supported using their metrics JSON and optional `experiment_environment.json`. Per-method environment metadata takes precedence over that legacy shared file, allowing experiments performed on different machines to be described separately. The report never substitutes the reporting machine's hardware for the experiment machine's hardware. Conflicting experiment parameters and metrics produce an error instead of silently mixing runs.
+
+`src/report.py` contains report loading, aligned evaluation, duration formatting,
+and all report plots. Generate the standard images without running a notebook:
+
+```bash
+python -m src.report --output-dir outputs --report-dir figs
+```
+
+Plot functions follow one interface:
+`plot_*(data, output_path, *, style=DEFAULT_STYLE, show=False) -> Path`.
+They create the destination directory, save the image, optionally display it,
+and close their figure. Styling is scoped to each plot without changing global
+Matplotlib settings. `PlotStyle` defines the shared palette, fonts, chart and
+table dimensions, line widths, and display/export resolution.
+
+```python
+from dataclasses import replace
+from src.report import DEFAULT_STYLE, generate_reports, load_report_data
+
+style = replace(DEFAULT_STYLE, font_size=12, export_dpi=300)
+data = load_report_data("outputs")
+paths = generate_reports(data, "figs", style=style)
+```
+
+The reporting notebook imports these functions. Both HHC-SE and HHC-GM delta
+columns compare against HHC; metric deltas are expressed in percentage points.
+Scores use the same aligned publications across all methods, while run counts
+and durations come from the original metrics files.

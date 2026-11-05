@@ -1,0 +1,77 @@
+{
+  "environment": {
+    "active_cuda_device": 0,
+    "active_cuda_device_name": "Tesla T4",
+    "architecture": "x86_64",
+    "cpu": {
+      "cores_per_socket": 1,
+      "logical_processors": 2,
+      "model": "Intel(R) Xeon(R) CPU @ 2.00GHz",
+      "sockets": 1,
+      "threads_per_core": 2
+    },
+    "gpu": {
+      "driver_supported_cuda_version": "13.0",
+      "driver_version": "580.82.07",
+      "memory_mib": 15360,
+      "model": "Tesla T4"
+    },
+    "gpus": [
+      {
+        "driver_supported_cuda_version": "13.0",
+        "driver_version": "580.82.07",
+        "memory_mib": 15360,
+        "model": "Tesla T4"
+      }
+    ],
+    "operating_system": "Linux-6.6.159+-x86_64-with-glibc2.39",
+    "python_version": "3.13.16",
+    "pytorch_cpu_threads": 4,
+    "pytorch_cuda_version": "13.0",
+    "pytorch_version": "2.11.0+cu130",
+    "source": "Automatically collected on the experiment machine",
+    "system_memory_mib": 12976,
+    "virtualization": "KVM"
+  },
+  "method": "HHC-GM",
+  "parameters": {
+    "candidate_score": "centroid",
+    "cpu_int8": false,
+    "cpu_threads": 4,
+    "decision_cache": "outputs/hhc_gm_decisions_cache.jsonl",
+    "decisions_output": "outputs/hhc_gm_decisions.jsonl",
+    "device": "auto",
+    "embedding_batch_size": 16,
+    "embedding_cache": "outputs/semcse_cosine_embeddings.pt",
+    "embedding_max_length": 256,
+    "embedding_model": "CLAUSE-Bielefeld/SemCSE_cosine",
+    "input": "data/lagosandv1_test.csv",
+    "llm_confidence_threshold": 0.7,
+    "llm_retries": 1,
+    "max_input_tokens": 2048,
+    "max_llm_comparisons_per_group": 25,
+    "max_new_tokens": 128,
+    "max_records_per_cluster": 8,
+    "metrics_output": "outputs/hhc_gm_metrics.json",
+    "model": "Qwen/Qwen3-1.7B",
+    "model_cache": "models",
+    "model_revision": "main",
+    "n_ambiguous_group": 1000,
+    "no_progress": false,
+    "output": "outputs/hhc_gm_predictions.csv",
+    "prompts_output": "outputs/hhc_gm_prompts.json",
+    "rebuild_cache": false,
+    "retrieval_diagnostics": false,
+    "seed": 1,
+    "semantic_candidate_threshold": 0.55,
+    "semantic_top_k": 5,
+    "title_threshold": 0.3,
+    "venue_threshold": 0.5
+  },
+  "recorded_at_utc": "2026-11-05T05:03:12.343728+00:00",
+  "resolved": {
+    "device": "cuda"
+  },
+  "schema_version": 1,
+  "source": "Captured at experiment completion"
+}

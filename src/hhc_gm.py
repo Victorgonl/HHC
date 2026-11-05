@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import argparse
 import ast
-import json
 import hashlib
+import json
 import time
 from collections import defaultdict
 from dataclasses import dataclass
@@ -88,12 +88,20 @@ def select_evidence(papers: list[dict], other: list[dict], limit: int) -> list[d
     other_terms = set().union(*(set(hhc.text_terms(p["title"])) for p in other))
     selected, remaining, covered = [], list(papers), set()
     while remaining and len(selected) < limit:
+
         def score(p):
             terms = set(hhc.text_terms(p["title"]))
-            shared = sum(any(hhc.names_similar(n, m) for m in other_names)
-                         for n in p["coauthors"])
-            return (shared, len(terms & other_terms), len(terms - covered),
-                    json.dumps(p, sort_keys=True))
+            shared = sum(
+                any(hhc.names_similar(n, m) for m in other_names)
+                for n in p["coauthors"]
+            )
+            return (
+                shared,
+                len(terms & other_terms),
+                len(terms - covered),
+                json.dumps(p, sort_keys=True),
+            )
+
         paper = max(remaining, key=score)
         selected.append(paper)
         covered.update(hhc.text_terms(paper["title"]))
@@ -112,8 +120,11 @@ def build_prompt(left: list[dict], right: list[dict], max_records: int) -> str:
             "focal_author_names": sorted({p["author_name"] for p in papers}),
             "total_publications": len(papers),
             "publications": [
-                {"title": p["title"], "venue": p["venue"],
-                 "collaborators": p["coauthors"]}
+                {
+                    "title": p["title"],
+                    "venue": p["venue"],
+                    "collaborators": p["coauthors"],
+                }
                 for p in select_evidence(papers, other, max_records)
             ],
         }
@@ -124,9 +135,11 @@ def build_prompt(left: list[dict], right: list[dict], max_records: int) -> str:
         return sum(len(token) > 1 for token in hhc.name_tokens(name)) >= 2
 
     payload["name_evidence"] = {
-        "compatible_names": all(hhc.names_similar(a, b)
-                                for a in payload["A"]["focal_author_names"]
-                                for b in payload["B"]["focal_author_names"]),
+        "compatible_names": all(
+            hhc.names_similar(a, b)
+            for a in payload["A"]["focal_author_names"]
+            for b in payload["B"]["focal_author_names"]
+        ),
         "both_clusters_have_full_names": all(
             any(full_name(n) for n in payload[k]["focal_author_names"])
             for k in ("A", "B")
@@ -144,10 +157,10 @@ def build_prompt(left: list[dict], right: list[dict], max_records: int) -> str:
         "Judge each input independently; cite its actual titles or names.\n"
         'Return only JSON with "same_author" (boolean), '
         '"same_author_probability" (0 to 1), and "reason" (brief evidence from this input). '
-        'same_author must be true exactly when same_author_probability exceeds 0.5.\n'
+        "same_author must be true exactly when same_author_probability exceeds 0.5.\n"
         "Input:\n<clusters>\n"
         + json.dumps(payload, ensure_ascii=False, sort_keys=True)
-        + '\n</clusters>\nAnswer: '
+        + "\n</clusters>\nAnswer: "
     )
 
 
@@ -194,7 +207,9 @@ class LocalJudge:
             for line in args.decision_cache.read_text(encoding="utf-8").splitlines():
                 try:
                     entry = json.loads(line)
-                    self.cache[entry["key"]] = parse_decision(json.dumps(entry["decision"]))
+                    self.cache[entry["key"]] = parse_decision(
+                        json.dumps(entry["decision"])
+                    )
                 except (ValueError, KeyError, TypeError):
                     continue  # Ignore incomplete writes and legacy cache formats.
         args.decisions_output.parent.mkdir(parents=True, exist_ok=True)
@@ -220,7 +235,8 @@ class LocalJudge:
         started = time.perf_counter()
         self.args.model_cache.mkdir(parents=True, exist_ok=True)
         self.tokenizer = AutoTokenizer.from_pretrained(
-            self.args.model, cache_dir=self.args.model_cache,
+            self.args.model,
+            cache_dir=self.args.model_cache,
             revision=self.args.model_revision,
         )
         self.model = AutoModelForCausalLM.from_pretrained(
@@ -251,18 +267,27 @@ class LocalJudge:
         a, b = cluster_data(left, rows), cluster_data(right, rows)
         # Canonical order also makes reversed pair requests share one decision.
         a, b = sorted((a, b), key=lambda v: json.dumps(v, sort_keys=True))
-        settings = {k: getattr(self.args, k) for k in (
-            "model", "model_revision", "max_records_per_cluster", "max_input_tokens",
-            "max_new_tokens", "llm_retries", "cpu_int8")}
+        settings = {
+            k: getattr(self.args, k)
+            for k in (
+                "model",
+                "model_revision",
+                "max_records_per_cluster",
+                "max_input_tokens",
+                "max_new_tokens",
+                "llm_retries",
+                "cpu_int8",
+            )
+        }
         settings["device"] = self.device
         # Invalidate decisions when prompt wording changes, even if a version
         # bump is missed. Constructing the prompt does not load either model.
         settings["prompt_fingerprint"] = hashlib.sha256(
             build_prompt(a, b, self.args.max_records_per_cluster).encode()
         ).hexdigest()
-        key = hashlib.sha256(json.dumps(
-            [PROMPT_VERSION, settings, a, b], sort_keys=True
-        ).encode()).hexdigest()
+        key = hashlib.sha256(
+            json.dumps([PROMPT_VERSION, settings, a, b], sort_keys=True).encode()
+        ).hexdigest()
         started = time.perf_counter()
         cached = key in self.cache
         if cached:
@@ -279,16 +304,26 @@ class LocalJudge:
                     f.write(json.dumps({"key": key, "decision": vars(decision)}) + "\n")
         elapsed = time.perf_counter() - started
         with self.args.decisions_output.open("a", encoding="utf-8") as f:
-            f.write(json.dumps({
-                "key": key, "model": self.args.model,
-                "left_indices": sorted(r.index for r in left.records),
-                "right_indices": sorted(r.index for r in right.records),
-                "label": ideal_label(left, right, rows), "cache_hit": cached,
-                "decision": vars(decision), "seconds": round(elapsed, 4),
-                "valid_response": cached or self._valid_response,
-                "accepted": decision.same_author and decision.same_author_probability
-                >= self.args.llm_confidence_threshold,
-            }, ensure_ascii=False) + "\n")
+            f.write(
+                json.dumps(
+                    {
+                        "key": key,
+                        "model": self.args.model,
+                        "left_indices": sorted(r.index for r in left.records),
+                        "right_indices": sorted(r.index for r in right.records),
+                        "label": ideal_label(left, right, rows),
+                        "cache_hit": cached,
+                        "decision": vars(decision),
+                        "seconds": round(elapsed, 4),
+                        "valid_response": cached or self._valid_response,
+                        "accepted": decision.same_author
+                        and decision.same_author_probability
+                        >= self.args.llm_confidence_threshold,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
         return decision
 
     def _compare(self, a, b, label) -> Decision:
@@ -333,8 +368,17 @@ class LocalJudge:
             )
             self.inference_seconds += time.perf_counter() - started
             with self.args.decisions_output.open("a", encoding="utf-8") as f:
-                f.write(json.dumps({"attempt": attempt, "response": response,
-                                    "key": self._active_key, "label": label}) + "\n")
+                f.write(
+                    json.dumps(
+                        {
+                            "attempt": attempt,
+                            "response": response,
+                            "key": self._active_key,
+                            "label": label,
+                        }
+                    )
+                    + "\n"
+                )
             try:
                 decision = parse_decision(response)
             except ValueError:
@@ -353,7 +397,10 @@ def compatible_clusters(left: hhc.Cluster, right: hhc.Cluster) -> bool:
 
 
 def candidate_pairs(
-    clusters: list[hhc.Cluster], embeddings: torch.Tensor, threshold: float, top_k: int,
+    clusters: list[hhc.Cluster],
+    embeddings: torch.Tensor,
+    threshold: float,
+    top_k: int,
     score_mode: str = "centroid",
 ) -> list[tuple[int, int]]:
     if len(clusters) < 2:
@@ -375,7 +422,9 @@ def candidate_pairs(
             a = normalized[[r.index for r in left.records]]
             for j in range(i + 1, len(clusters)):
                 b = normalized[[r.index for r in clusters[j].records]]
-                scores[i, j] = scores[j, i] = torch.maximum(scores[i, j], (a @ b.T).max())
+                scores[i, j] = scores[j, i] = torch.maximum(
+                    scores[i, j], (a @ b.T).max()
+                )
     neighbors: dict[int, list[tuple[float, int]]] = defaultdict(list)
     for i, left in enumerate(clusters):
         for j in range(i + 1, len(clusters)):
@@ -391,31 +440,55 @@ def candidate_pairs(
     return sorted(selected, key=lambda pair: (-float(scores[pair]), pair))
 
 
-def retrieval_diagnostics(clusters, embeddings, rows, threshold, top_k, budget,
-                          score_mode="centroid"):
+def retrieval_diagnostics(
+    clusters, embeddings, rows, threshold, top_k, budget, score_mode="centroid"
+):
     """Ground truth is used only to audit retrieval, never to select candidates."""
-    truth = {(i, j) for i in range(len(clusters)) for j in range(i + 1, len(clusters))
-             if ideal_label(clusters[i], clusters[j], rows) is True}
-    compatible = {pair for pair in truth
-                  if compatible_clusters(clusters[pair[0]], clusters[pair[1]])}
+    truth = {
+        (i, j)
+        for i in range(len(clusters))
+        for j in range(i + 1, len(clusters))
+        if ideal_label(clusters[i], clusters[j], rows) is True
+    }
+    compatible = {
+        pair
+        for pair in truth
+        if compatible_clusters(clusters[pair[0]], clusters[pair[1]])
+    }
     eligible = set(candidate_pairs(clusters, embeddings, threshold, 0, score_mode))
     selected = candidate_pairs(clusters, embeddings, threshold, top_k, score_mode)
     return {
-        "true_pairs": len(truth), "name_compatible_true_pairs": len(compatible),
+        "true_pairs": len(truth),
+        "name_compatible_true_pairs": len(compatible),
         "semantic_true_pairs": len(truth & eligible),
         "top_k_true_pairs": len(truth & set(selected)),
-        "initial_budget_true_pairs": len(truth & set(selected[:budget] if budget else selected)),
+        "initial_budget_true_pairs": len(
+            truth & set(selected[:budget] if budget else selected)
+        ),
         "candidate_pairs": len(selected),
     }
 
 
 def decision_diagnostics(path: Path, threshold: float) -> dict:
     """Audit valid labeled comparisons; this is not an independent test set."""
-    entries = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
-    entries = [e for e in entries if "decision" in e
-               and e.get("valid_response") and type(e.get("label")) is bool]
-    bins = [{"lower": i / 10, "upper": (i + 1) / 10,
-             "count": 0, "positives": 0, "probability_sum": 0.0} for i in range(10)]
+    entries = [
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    entries = [
+        e
+        for e in entries
+        if "decision" in e and e.get("valid_response") and type(e.get("label")) is bool
+    ]
+    bins = [
+        {
+            "lower": i / 10,
+            "upper": (i + 1) / 10,
+            "count": 0,
+            "positives": 0,
+            "probability_sum": 0.0,
+        }
+        for i in range(10)
+    ]
     tp = fp = fn = tn = 0
     brier = 0.0
     for entry in entries:
@@ -433,12 +506,21 @@ def decision_diagnostics(path: Path, threshold: float) -> dict:
         bucket["probability_sum"] += p
     for bucket in bins:
         count = bucket["count"]
-        bucket["mean_probability"] = bucket.pop("probability_sum") / count if count else None
-        bucket["observed_same_author_rate"] = bucket.pop("positives") / count if count else None
-    return {"labeled_valid_comparisons": len(entries), "true_positive": tp,
-            "false_positive": fp, "false_negative": fn, "true_negative": tn,
-            "brier_score": brier / len(entries) if entries else None,
-            "confidence_bins": bins}
+        bucket["mean_probability"] = (
+            bucket.pop("probability_sum") / count if count else None
+        )
+        bucket["observed_same_author_rate"] = (
+            bucket.pop("positives") / count if count else None
+        )
+    return {
+        "labeled_valid_comparisons": len(entries),
+        "true_positive": tp,
+        "false_positive": fp,
+        "false_negative": fn,
+        "true_negative": tn,
+        "brier_score": brier / len(entries) if entries else None,
+        "confidence_bins": bins,
+    }
 
 
 def generative_step(
@@ -458,8 +540,9 @@ def generative_step(
     reviewed = set()
     while not max_comparisons or stats["llm_comparisons"] < max_comparisons:
         merged = False
-        for i, j in candidate_pairs(clusters, embeddings, semantic_threshold, top_k,
-                                    candidate_score):
+        for i, j in candidate_pairs(
+            clusters, embeddings, semantic_threshold, top_k, candidate_score
+        ):
             left, right = clusters[i], clusters[j]
             identity = tuple(
                 sorted(
@@ -514,16 +597,18 @@ def run(args: argparse.Namespace) -> dict:
     embeddings = None
     embedding_seconds, embedding_setup, embedding_cache_hit = 0.0, 0.0, False
     if any(len(clusters) > 1 for clusters in groups.values()):
-        embeddings, embedding_cache_hit, embedding_seconds, embedding_setup = hhc_se.encode_rows(
-            rows,
-            args.embedding_model,
-            args.model_cache,
-            args.embedding_batch_size,
-            args.embedding_max_length,
-            device,
-            args.embedding_cache,
-            args.rebuild_cache,
-            args.no_progress,
+        embeddings, embedding_cache_hit, embedding_seconds, embedding_setup = (
+            hhc_se.encode_rows(
+                rows,
+                args.embedding_model,
+                args.model_cache,
+                args.embedding_batch_size,
+                args.embedding_max_length,
+                device,
+                args.embedding_cache,
+                args.rebuild_cache,
+                args.no_progress,
+            )
         )
         if device == "cuda":
             torch.cuda.empty_cache()
@@ -534,8 +619,12 @@ def run(args: argparse.Namespace) -> dict:
         if len(clusters) > 1:
             if args.retrieval_diagnostics:
                 for key, value in retrieval_diagnostics(
-                    clusters, embeddings, rows, args.semantic_candidate_threshold,
-                    args.semantic_top_k, args.max_llm_comparisons_per_group,
+                    clusters,
+                    embeddings,
+                    rows,
+                    args.semantic_candidate_threshold,
+                    args.semantic_top_k,
+                    args.max_llm_comparisons_per_group,
                     args.candidate_score,
                 ).items():
                     diagnostics[key] += value
@@ -570,9 +659,11 @@ def run(args: argparse.Namespace) -> dict:
         "llm_model_calls": judge.model_calls,
         "llm_cache_hits": judge.cache_hits,
         "llm_inference_seconds": round(judge.inference_seconds, 3),
+        "retrieval_diagnostics_enabled": args.retrieval_diagnostics,
         "retrieval_diagnostics": dict(diagnostics),
         "decision_diagnostics": decision_diagnostics(
-            args.decisions_output, args.llm_confidence_threshold),
+            args.decisions_output, args.llm_confidence_threshold
+        ),
         "prompts_recorded": judge.prompts_recorded,
         "llm_invalid_responses": judge.invalid_responses,
         "llm_oversized_prompts": judge.oversized_prompts,
@@ -604,16 +695,30 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--model-revision", default="main")
-    parser.add_argument("--cpu-int8", action="store_true",
-                        help="Dynamically quantize CPU linear layers to int8")
-    parser.add_argument("--cpu-threads", type=int, default=4,
-                        help="CPU inference threads; 0 preserves the PyTorch default")
-    parser.add_argument("--decision-cache", type=Path,
-                        default=Path("outputs/hhc_gm_decisions_cache.jsonl"))
-    parser.add_argument("--decisions-output", type=Path,
-                        default=Path("outputs/hhc_gm_decisions.jsonl"))
-    parser.add_argument("--embedding-cache", type=Path,
-                        default=Path("outputs/semcse_cosine_embeddings.pt"))
+    parser.add_argument(
+        "--cpu-int8",
+        action="store_true",
+        help="Dynamically quantize CPU linear layers to int8",
+    )
+    parser.add_argument(
+        "--cpu-threads",
+        type=int,
+        default=4,
+        help="CPU inference threads; 0 preserves the PyTorch default",
+    )
+    parser.add_argument(
+        "--decision-cache",
+        type=Path,
+        default=Path("outputs/hhc_gm_decisions_cache.jsonl"),
+    )
+    parser.add_argument(
+        "--decisions-output", type=Path, default=Path("outputs/hhc_gm_decisions.jsonl")
+    )
+    parser.add_argument(
+        "--embedding-cache",
+        type=Path,
+        default=Path("outputs/semcse_cosine_embeddings.pt"),
+    )
     parser.add_argument("--rebuild-cache", action="store_true")
     parser.add_argument("--retrieval-diagnostics", action="store_true")
     parser.add_argument("--model-cache", type=Path, default=Path("models"))
@@ -622,8 +727,12 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--venue-threshold", type=float, default=0.50)
     parser.add_argument("--llm-confidence-threshold", type=float, default=0.70)
     parser.add_argument("--semantic-candidate-threshold", type=float, default=0.55)
-    parser.add_argument("--candidate-score", choices=("centroid", "hybrid"),
-                        default="centroid", help="Hybrid also retrieves by best paper pair")
+    parser.add_argument(
+        "--candidate-score",
+        choices=("centroid", "hybrid"),
+        default="centroid",
+        help="Hybrid also retrieves by best paper pair",
+    )
     parser.add_argument(
         "--semantic-top-k", type=int, default=5, help="0 keeps all qualifying neighbors"
     )
@@ -652,7 +761,12 @@ def parse_args(argv=None) -> argparse.Namespace:
             parser.error(f"--{name.replace('_', '-')} must be between 0 and 1")
     if not -1 <= args.semantic_candidate_threshold <= 1:
         parser.error("--semantic-candidate-threshold must be between -1 and 1")
-    for name in ("semantic_top_k", "max_llm_comparisons_per_group", "llm_retries", "cpu_threads"):
+    for name in (
+        "semantic_top_k",
+        "max_llm_comparisons_per_group",
+        "llm_retries",
+        "cpu_threads",
+    ):
         if getattr(args, name) < 0:
             parser.error(f"--{name.replace('_', '-')} cannot be negative")
     for name in (
