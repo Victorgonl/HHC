@@ -1461,6 +1461,7 @@ def build_paper_sections(
         return Path(os.path.relpath(Path(path).resolve(), readme_parent)).as_posix()
 
     abstract = (
+        "*"
         "This work studies Author Name Disambiguation (AND) using heuristic hierarchical clustering (HHC), "
         "a semantic-evidence extension (HHC-SE), and a generative-model extension (HHC-GM). "
         f"Using a subset of the LAGOS-AND dataset, the shared evaluation cohort contains {len(data.common):,} records from "
@@ -1473,6 +1474,7 @@ def build_paper_sections(
         + ". "
         f"{best} has the highest B-cubed F1 in the reported experimental evaluation. "
         "The results describe one experiment per method, without a significance test."
+        "*"
     )
     dataset = (
         "We evaluate on a subset of LAGOS-AND [[6]](#ref-6), using ORCID-based "

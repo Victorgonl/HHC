@@ -1,10 +1,10 @@
 # Semantic and Generative Extensions to Heuristic Hierarchical Clustering for Author Name Disambiguation
 
-## Abstract
+**Abstract**
 
 <!-- HHC:ABSTRACT:START -->
 
-This work studies Author Name Disambiguation (AND) using heuristic hierarchical clustering (HHC), a semantic-evidence extension (HHC-SE), and a generative-model extension (HHC-GM). Using a subset of the LAGOS-AND dataset, the shared evaluation cohort contains 18,737 records from 1,000 ambiguous-name groups and 2,935 real authors. B-cubed F1 is 0.7825 for HHC, 0.7906 for HHC-SE, 0.8055 for HHC-GM. HHC-GM has the highest B-cubed F1 in the reported experimental evaluation. The results describe one experiment per method, without a significance test.
+*This work studies Author Name Disambiguation (AND) using heuristic hierarchical clustering (HHC), a semantic-evidence extension (HHC-SE), and a generative-model extension (HHC-GM). Using a subset of the LAGOS-AND dataset, the shared evaluation cohort contains 18,737 records from 1,000 ambiguous-name groups and 2,935 real authors. B-cubed F1 is 0.7825 for HHC, 0.7906 for HHC-SE, 0.8055 for HHC-GM. HHC-GM has the highest B-cubed F1 in the reported experimental evaluation. The results describe one experiment per method, without a significance test.*
 
 <!-- HHC:ABSTRACT:END -->
 
