@@ -1003,146 +1003,193 @@ def plot_methodology(
     show: bool = False,
 ) -> Path:
     """Compare the implemented clustering workflows, independent of run scores."""
+    from matplotlib.lines import Line2D
     from matplotlib.patches import FancyBboxPatch
 
     with plt.rc_context(style.rc_params()):
-        fig, ax = plt.subplots(figsize=(12, 8))
+        fig, ax = plt.subplots(figsize=(14, 9))
         try:
-            ax.set(xlim=(0, 12), ylim=(0, 9))
+            ax.set(xlim=(0, 14), ylim=(-0.6, 10.5))
             ax.axis("off")
+            hhc, se, gm = style.colors
             ax.text(
-                6,
-                8.7,
+                7,
+                10.1,
                 "Method: shared HHC steps and model extensions",
                 ha="center",
                 fontsize=style.title_size,
+                weight="bold",
             )
             ax.text(
-                6,
-                8.3,
-                "Process each ambiguous-name block independently",
+                7,
+                9.65,
+                "Each workflow operates independently within an ambiguous-name block",
                 ha="center",
-                fontsize=9,
+                fontsize=10,
+                color=style.muted_text,
             )
 
-            def box(x, y, text, color, width=3.2, height=1.0):
+            def box(x, y, title, body, color, width=3.8):
                 ax.add_patch(
                     FancyBboxPatch(
-                        (x - width / 2, y - height / 2),
+                        (x - width / 2, y - 0.6),
                         width,
-                        height,
-                        boxstyle="round,pad=0.035,rounding_size=0.07",
+                        1.2,
+                        boxstyle="round,pad=0.04,rounding_size=0.09",
                         facecolor=style.panel,
                         edgecolor=color,
                         linewidth=style.line_width,
                     )
                 )
                 ax.text(
-                    x, y, text, ha="center", va="center", fontsize=9, linespacing=1.4
+                    x,
+                    y + 0.31,
+                    title,
+                    ha="center",
+                    va="center",
+                    fontsize=10,
+                    weight="bold",
+                    color=color,
+                )
+                ax.text(
+                    x,
+                    y - 0.16,
+                    body,
+                    ha="center",
+                    va="center",
+                    fontsize=9,
+                    linespacing=1.5,
                 )
 
-            def arrow(points, color, label=None):
-                for start, end in zip(points[:-2], points[1:-1]):
-                    ax.plot([start[0], end[0]], [start[1], end[1]], color=color, lw=1.1)
+            def arrow(points, color):
+                ax.plot(*zip(*points), color=color, lw=1.2, solid_capstyle="round")
                 ax.annotate(
                     "",
                     xy=points[-1],
                     xytext=points[-2],
-                    arrowprops=dict(arrowstyle="->", color=color, lw=1.1),
+                    arrowprops=dict(arrowstyle="->", color=color, lw=1.2),
                 )
-                if label:
-                    x, y, text = label
-                    ax.text(x, y, text, ha="center", fontsize=8, color=color)
 
-            hhc, se, gm = style.colors
             box(
-                6,
-                7.25,
-                "Shared HHC preprocessing and initialization\nNormalize names and lexical evidence; initialize clusters\nusing compatible names and shared coauthors",
+                7,
+                8.55,
+                "Shared HHC initialization",
+                "Normalize names, titles, and venues; initialize clusters\nwith compatible author names and shared coauthors",
                 hhc,
-                width=7,
-                height=1.2,
+                width=8,
             )
+            arrow([(4, 7.91), (4, 7.55), (2.3, 7.55), (2.3, 7.14)], hhc)
+            arrow([(10, 7.91), (10, 7.55), (11.7, 7.55), (11.7, 7.14)], se)
             box(
-                2.5,
-                5.45,
-                "HHC: lexical merging\nCompatible names + title OR venue similarity\nMerge and aggregate until a pass has no merge",
+                2.3,
+                6.5,
+                "HHC · lexical merging",
+                "Compatible names AND\n(title OR venue similarity above threshold)",
                 hhc,
-                width=4.7,
             )
-            arrow([(4, 6.62), (4, 6.25), (2.5, 6.25), (2.5, 5.98)], hhc)
-            box(
-                9.1,
-                5.45,
-                "HHC-SE: add SemCSE embeddings\nEncode title + venue; sum record vectors\nReuse the initialized HHC clusters",
-                se,
-                width=4.8,
-            )
-            arrow([(8, 6.62), (8, 6.25), (9.1, 6.25), (9.1, 5.98)], se)
-            box(
-                2.5,
-                3.9,
-                "HHC output: final author clusters\nAlso reused as the starting clusters for HHC-GM\nExisting clusters are never split",
-                hhc,
-                width=4.7,
-            )
-            arrow([(2.5, 4.92), (2.5, 4.43)], hhc)
-            box(
-                9.1,
-                3.9,
-                "HHC-SE: extend HHC merging\nCompatible names + title OR venue OR embeddings\nUpdate evidence and vector sums after each merge",
-                se,
-                width=4.8,
-            )
-            arrow([(9.1, 4.92), (9.1, 4.43)], se)
-            box(
-                9.1,
-                2.35,
-                "HHC-SE output: final author clusters\nStop when a complete pass has no merge",
-                se,
-                width=4.8,
-            )
-            arrow([(9.1, 3.37), (9.1, 2.88)], se)
-            box(
-                2.5,
-                2.35,
-                "HHC-GM: retrieve unresolved HHC pairs\nSemCSE similarity; compatible names\nApply similarity cutoff and top-k filters",
-                gm,
-                width=4.7,
-            )
-            arrow([(2.5, 3.37), (2.5, 2.88)], gm)
-            box(
-                2.5,
-                0.8,
-                "HHC-GM: select evidence and query LLM\nValidate JSON; merge only if positive\nand probability meets the threshold",
-                gm,
-                width=4.7,
-            )
-            arrow([(2.5, 1.82), (2.5, 1.33)], gm)
-            box(
-                9.1,
-                0.8,
-                "HHC-GM output: final author clusters\nStop when no pair is approved\nor the comparison budget is exhausted",
-                gm,
-                width=4.8,
-            )
-            arrow([(4.88, 0.8), (6.67, 0.8)], gm)
-            arrow([(0.12, 0.8), (0.02, 0.8), (0.02, 2.35), (0.12, 2.35)], gm)
+            arrow([(2.3, 5.86), (2.3, 5.14)], hhc)
             ax.text(
-                5.75,
-                1.57,
-                "Retrieve again\nafter a merge",
+                2.3,
+                5.5,
+                "Aggregate evidence; repeat until stable",
                 ha="center",
-                fontsize=7,
+                fontsize=8,
+                color=hhc,
+            )
+            box(
+                2.3,
+                4.5,
+                "HHC · final author clusters",
+                "Baseline output\nReused as HHC-GM starting clusters",
+                hhc,
+            )
+            arrow([(4.24, 4.5), (5.06, 4.5)], gm)
+            box(
+                7,
+                4.5,
+                "HHC-GM · retrieve pairs",
+                "SemCSE ranking of compatible clusters\nSimilarity cutoff + top-k filtering",
+                gm,
+            )
+            arrow([(7, 3.86), (7, 3.14)], gm)
+            box(
+                7,
+                2.5,
+                "HHC-GM · judge and merge",
+                "Select evidence; validate LLM JSON\nPositive answer + probability threshold",
+                gm,
+            )
+            arrow([(7, 1.86), (7, 1.34)], gm)
+            box(
+                7,
+                0.7,
+                "HHC-GM · final author clusters",
+                "Stop: no approved pair or budget exhausted\nOriginal HHC clusters are never split",
+                gm,
+            )
+            arrow([(5.06, 2.5), (4.65, 2.5), (4.65, 5.45), (7, 5.45), (7, 5.14)], gm)
+            ax.text(
+                6.35,
+                5.63,
+                "After a merge: update clusters and retrieve again",
+                ha="center",
+                fontsize=8,
                 color=gm,
-                bbox=dict(facecolor=style.panel, edgecolor="none", pad=1),
+            )
+            box(
+                11.7,
+                6.5,
+                "HHC-SE · semantic evidence",
+                "Encode title + venue with SemCSE\nSum normalized record embeddings",
+                se,
+            )
+            arrow([(11.7, 5.86), (11.7, 5.14)], se)
+            box(
+                11.7,
+                4.5,
+                "HHC-SE · extended merging",
+                "Compatible names AND similarity above\na title, venue, OR embedding threshold",
+                se,
+            )
+            arrow([(11.7, 3.86), (11.7, 3.14)], se)
+            ax.text(
+                11.7,
+                3.5,
+                "Update lexical evidence and vector sums",
+                ha="center",
+                fontsize=8,
+                color=se,
+            )
+            box(
+                11.7,
+                2.5,
+                "HHC-SE · final author clusters",
+                "Lexical and semantic merges interleave\nStop: a complete pass has no merge",
+                se,
+            )
+            ax.legend(
+                handles=[
+                    Line2D([0], [0], color=color, lw=3, label=label)
+                    for color, label in (
+                        (hhc, "HHC / shared baseline steps"),
+                        (se, "HHC-SE extension"),
+                        (gm, "HHC-GM extension"),
+                    )
+                ],
+                loc="lower center",
+                bbox_to_anchor=(0.5, -0.055),
+                ncol=3,
+                fontsize=9,
+                handlelength=2,
+                columnspacing=2.5,
             )
             ax.text(
-                6,
-                -0.12,
-                "Ground-truth labels are used only for evaluation and audit logs.",
+                7,
+                -0.35,
+                "Ground-truth labels are reserved for evaluation and audit logs.",
                 ha="center",
                 fontsize=8.5,
+                color=style.muted_text,
             )
             return _save_figure(fig, output_path, style=style, show=show)
         finally:

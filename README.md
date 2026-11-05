@@ -1,4 +1,4 @@
-# Revisiting Heuristic Author Name Disambiguation with Language Models
+# Semantic and Generative Extensions to Heuristic Hierarchical Clustering for Author Name Disambiguation
 
 ## Abstract
 
