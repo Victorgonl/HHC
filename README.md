@@ -1,5 +1,7 @@
 # Semantic and Generative Extensions to Heuristic Hierarchical Clustering for Author Name Disambiguation
 
+🌐 **[Portuguese Version](README-pt_BR.md)**
+
 **Abstract**
 
 <!-- HHC:ABSTRACT:START -->
@@ -48,7 +50,9 @@ Given bibliographic records partitioned by ambiguous author name, the objective 
 
 [The generative extension](./src/hhc_gm.py) first completes classical HHC. It ranks unresolved compatible cluster pairs using semantic evidence, applies similarity and top-k filters, then requests a structured same-author judgment from a local instruction-tuned LLM. The reported experiment uses centroid retrieval, which ranks pairs by cosine similarity between summed cluster embeddings. An optional hybrid score also considers the most similar cross-cluster publication pair, but it is not used in the reported configuration. Prompts contain focal-name variants, titles, venues, and collaborators. The displayed publications are selected greedily to prioritize shared collaborators and title terms occurring across the two clusters, followed by additional vocabulary coverage. No labels enter this selection. All cross-cluster author-name forms must be compatible before an additional merge is accepted. A valid positive JSON answer must meet the configured probability threshold. Candidates are recomputed after a merge until no approved pair remains or the group budget is exhausted. Existing HHC clusters are never split.
 
-Generation is greedy. The Qwen chat template disables thinking. Invalid responses can be retried, and prompts are shortened to fit token budgets. Ground-truth prompt labels and decision diagnostics are audit artifacts, not model inputs. Stated probabilities are decision scores, not assumed calibrated posteriors.
+The generative stage of HHC-GM uses **zero-shot inference**: the model receives task instructions and the data of the cluster pair to assess, without solved matching or non-matching examples in context. This characterization concerns the use of the LLM, not the HHC heuristics or the models' prior training. The LLM is not fine-tuned for this task.
+
+Generation is greedy (`do_sample=False`): at each step, the model selects the highest-probability token. No sampling temperature is explicitly set, and temperature does not control this decoding mode. The Qwen chat template disables thinking. Invalid responses can be retried, and prompts are shortened to fit token budgets. Ground-truth prompt labels and decision diagnostics are audit artifacts, not model inputs. Stated probabilities are decision scores, not assumed calibrated posteriors.
 
 ## 4. Experiments
 
@@ -80,7 +84,7 @@ HHC-SE used the pretrained `CLAUSE-Bielefeld/SemCSE_cosine` encoder on CUDA, wit
 
 #### 4.2.3 Generative model and decision criteria
 
-Cluster-pair assessment used `Qwen/Qwen3-1.7B` at revision `main` on CUDA. Each prompt included at most 8 selected publications per cluster. Input length was limited to 2048 tokens, and generation was limited to 128 new tokens. Malformed responses permitted up to 1 additional attempt. Inference used greedy decoding, with thinking disabled for Qwen. A valid positive response authorized a merge only when its stated same-author probability was at least 0.7. The comparison budget was 25 cluster-pair assessments per name block (zero denotes an unlimited budget). Retries can increase the number of inference calls without increasing this pair budget. CPU int8 quantization was disabled, with a configured CPU thread count of 4.
+Cluster-pair assessment used `Qwen/Qwen3-1.7B` at revision `main` on CUDA. Each prompt included at most 8 selected publications per cluster. Input length was limited to 2048 tokens, and generation was limited to 128 new tokens. Malformed responses permitted up to 1 additional attempt. Inference used greedy decoding (`do_sample=False`), with thinking disabled for Qwen. No sampling temperature was explicitly supplied to `generate`; temperature is not applied because token sampling is disabled. This should be reported as greedy decoding, rather than as an explicitly configured `temperature=0`. A valid positive response authorized a merge only when its stated same-author probability was at least 0.7. The comparison budget was 25 cluster-pair assessments per name block (zero denotes an unlimited budget). Retries can increase the number of inference calls without increasing this pair budget. CPU int8 quantization was disabled, with a configured CPU thread count of 4.
 
 #### 4.2.4 Computational environment
 
@@ -99,6 +103,12 @@ Cluster-pair assessment used `Qwen/Qwen3-1.7B` at revision `main` on CUDA. Each 
 | NVIDIA driver | 580.82.07 |
 
 #### 4.2.5 LLM prompt and response protocol
+
+**Zero-shot setup.** Each call contains the decision instructions, the required JSON response fields, and evidence from clusters `A` and `B`. No previous pairs accompanied by correct decisions are supplied, as they would be in a few-shot setup. Retrieved and selected publications are the data of the current comparison, not labeled demonstrations. Describing the JSON format is also not a solved example.
+
+The chat template receives a single user message, without a history of previous judgments. Ground-truth labels do not enter the prompt and are used only for evaluation and auditing. Retries after invalid responses add only a reminder about the JSON format, without supplying the correct answer. The model uses its pretrained weights without fine-tuning in this experiment. Zero-shot therefore describes the absence of demonstrations in the inference context; it does not imply an absence of prior training or guarantee that related content was absent from pretraining.
+
+The populated input and illustrative response shown below document the paper's protocol. The illustrative response is not appended to the prompts sent to the model and does not make the experiment one-shot or few-shot.
 
 The following instruction text is extracted verbatim from the first saved prompt in [the run's prompt log](outputs/hhc_gm_prompts.json), rather than reconstructed from current source defaults. The log contains 1,646 submitted prompts with 1 distinct instruction prefix.
 
@@ -181,7 +191,17 @@ For example, if a predicted cluster contains three records, two belonging to the
 
 Pairwise scores provide secondary diagnostics. A true positive (TP) is a pair with the same ground-truth author and predicted cluster. A false positive (FP) joins different authors, and a false negative (FN) separates the same author. A true negative (TN) correctly separates different authors. Pairwise precision is TP/(TP+FP), recall is TP/(TP+FN), and F1 is their harmonic mean. The implementation assigns precision or recall a value of one when its denominator is zero. Global pairwise and B-cubed metrics use ground-truth identity across the entire aligned cohort. The error-change analysis restricts pairs to the same ambiguous-name block and compares each extension with HHC on identical record pairs.
 
-Within each name block, average cluster purity (ACP) equals its record-averaged cluster precision and average author purity (AAP) equals its record-averaged author recall. For block b, K(b)=sqrt(ACP(b) × AAP(b)). Reported ACP, AAP, and K are arithmetic means over blocks, giving equal weight to each block. Higher values indicate better performance for all reported metrics.
+Within each name block, average cluster purity (ACP) equals its record-averaged cluster precision and average author purity (AAP) equals its record-averaged author recall. For block b, K(b)=sqrt(ACP(b) × AAP(b)). Reported ACP, AAP, and K are arithmetic means over blocks, giving equal weight to each block. Higher values indicate better performance for all clustering metrics in this section; the Brier score in Section 5.2 instead uses lower values to indicate better probabilistic predictions.
+
+The aggregation units differ across metrics. A group means an ambiguous-name block (`ambiguous_name`), not a predicted cluster. B-cubed uses a global record average: a block with 100 occurrences contributes ten times as much as one with 10. Pairwise uses global pair counts, not a mean of block-level scores; a set of n records contains n(n−1)/2 unordered pairs, so large author or predicted clusters can have a disproportionate influence. ACP, AAP, and K use a macro average over blocks: blocks with 100 and 10 occurrences receive the same final weight. In particular, the reported K is the mean of the block-specific square roots, not the square root of the product of the reported mean ACP and mean AAP.
+
+For B blocks, the macro averages are:
+
+$$
+ACP=\frac{1}{B}\sum_{b=1}^{B}ACP_b,\qquad AAP=\frac{1}{B}\sum_{b=1}^{B}AAP_b,\qquad K=\frac{1}{B}\sum_{b=1}^{B}\sqrt{ACP_b\,AAP_b}.
+$$
+
+All comparative scores are recomputed from the same aligned publication occurrences for the three methods, preserving duplicate occurrences. The reported F1 values are calculated from aggregated precision and recall, rather than averaged across name blocks. Error-change plots sum corrected and introduced publication pairs within name blocks. Execution times are totals for the saved runs, not averages over groups or repeated runs.
 
 #### 4.2.7 Scope and reproducibility limits
 
@@ -208,7 +228,19 @@ The measured execution times (s, min, h) were 13s for HHC, 1min 36s for HHC-SE, 
 
 ### 5.2 LLM judgment audit
 
-Evaluation of 1427 valid labeled cluster-pair judgments yielded 476 correct matches, 7 incorrect matches, 10 correct separations, and 934 missed matches. The Brier score was 0.6801. These judgments concern retrieved cluster pairs and differ from the publication-pair errors in Figure 7. The stated probabilities are not assumed calibrated. Brier score evaluates their squared probability error. Candidate selection and earlier merges condition this audit sample. At the configured threshold, the judge accepts 476 of 1,410 labeled same-author comparisons (recall 33.8%), indicating missed merge opportunities among the reviewed candidates.
+Evaluation of 1427 valid labeled cluster-pair judgments yielded 476 correct matches, 7 incorrect matches, 10 correct separations, and 934 missed matches. The Brier score was 0.6801. These judgments concern retrieved cluster pairs and differ from the publication-pair errors in Figure 7. Candidate selection and earlier merges condition this audit sample. At the configured threshold, the judge accepts 476 of 1,410 labeled same-author comparisons (recall 33.8%), indicating missed merge opportunities among the reviewed candidates.
+
+The **Brier score** measures the error of the probabilities stated by the LLM. For each valid labeled comparison j, let p_j be `same_author_probability` and y_j the ground-truth label: 1 for the same author and 0 for different authors. With M comparisons, it is calculated as:
+
+$$
+BS=\frac{1}{M}\sum_{j=1}^{M}(p_j-y_j)^2.
+$$
+
+Each comparison has equal weight; this is not a mean over ambiguous-name groups or publication pairs. Only valid responses with a boolean ground-truth label enter the calculation. The score uses the original probability, before applying the 0.7 merge threshold; changing only that threshold does not change Brier on the same comparisons and probabilities.
+
+In this binary formulation, the score ranges from 0 to 1, and **lower is better**. Zero means perfectly correct probabilities; one is the maximum error, with certainty in the wrong class on every comparison. For example, p=0.9 incurs error 0.01 when y=1, but 0.81 when y=0. Predicting p=0.5 for every comparison produces Brier 0.25 regardless of the labels. Confident errors therefore receive a larger penalty.
+
+The observed value of 0.6801 is the mean squared probability error, not an error rate or accuracy. In the saved diagnostics, 941 comparisons received p=0 even though 931 concerned the same author. Each of these missed matches incurred a penalty of 1, contributing strongly to the high score. Brier evaluates overall probabilistic quality and also depends on the ability to distinguish classes and on the positive-class proportion; it is not solely a measure of calibration. Because the audit uses candidates selected during clustering, its value describes this sample and does not establish calibration or probabilistic performance on an independent dataset.
 
 Candidate-retrieval coverage was not recorded for the current GM run.
 
